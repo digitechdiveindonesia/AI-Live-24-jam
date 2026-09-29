@@ -1,0 +1,6 @@
+{
+  "name": "AI Live Commerce",
+  "description": "Autonomous Broadcast v2.4 - Live Commerce Control Center, AI Presenter, Multichannel Ingestion & Safety Grounding",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
