@@ -144,8 +144,8 @@ export const SEED_PROMOTIONS: Promotion[] = [
     title: 'Diskon Kilat 20% Live Exclusive',
     discount_percent: 20,
     active: true,
-    start_time: '2026-09-28T00:00:00Z',
-    end_time: '2026-09-30T23:59:59Z'
+    start_time: '2026-01-01T00:00:00Z',
+    end_time: '2027-12-31T23:59:59Z'
   },
   {
     id: 'promo-002',
@@ -153,8 +153,8 @@ export const SEED_PROMOTIONS: Promotion[] = [
     title: 'Flash Sale Bundling Barrier',
     discount_percent: 15,
     active: true,
-    start_time: '2026-09-28T00:00:00Z',
-    end_time: '2026-09-30T23:59:59Z'
+    start_time: '2026-01-01T00:00:00Z',
+    end_time: '2027-12-31T23:59:59Z'
   }
 ];
 

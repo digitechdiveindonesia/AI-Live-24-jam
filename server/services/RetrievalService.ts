@@ -1,5 +1,6 @@
-import { db } from '../db';
+import { knowledgeRepository } from '../repositories/KnowledgeRepository';
 import { KnowledgeDocument, ProductFaq, KnowledgeRule } from '../db/schema';
+import { db } from '../db';
 
 export interface RetrievalResult {
   query: string;
@@ -8,9 +9,27 @@ export interface RetrievalResult {
   matchedRules: KnowledgeRule[];
   confidence: number;
   retrievalLatencyMs: number;
+  retrievalMethod: 'LEXICAL_SEARCH' | 'SEMANTIC_VECTOR';
 }
 
 export class RetrievalService {
+  /**
+   * Lexical search knowledge retrieval interface.
+   * Grounded in authoritative KnowledgeRepository (Supabase PostgreSQL / schema rules).
+   */
+  public async retrieveContextAsync(query: string, sku: string): Promise<RetrievalResult> {
+    const search = await knowledgeRepository.searchLexical(query, sku);
+    return {
+      query,
+      matchedFaqs: search.matchedFaqs,
+      matchedDocuments: search.matchedDocuments,
+      matchedRules: search.matchedRules,
+      confidence: search.matchedFaqs.length > 0 ? 0.94 : 0.85,
+      retrievalLatencyMs: search.retrievalLatencyMs,
+      retrievalMethod: 'LEXICAL_SEARCH'
+    };
+  }
+
   public retrieveContext(query: string, sku: string): RetrievalResult {
     const startTime = Date.now();
     const lower = query.toLowerCase();
@@ -42,7 +61,8 @@ export class RetrievalService {
       matchedDocuments: matchedDocuments.length > 0 ? matchedDocuments : db.documents.slice(0, 1),
       matchedRules,
       confidence: matchedFaqs.length > 0 ? 0.94 : 0.85,
-      retrievalLatencyMs: Date.now() - startTime + 8
+      retrievalLatencyMs: Date.now() - startTime + 8,
+      retrievalMethod: 'LEXICAL_SEARCH'
     };
   }
 }

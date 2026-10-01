@@ -39,6 +39,8 @@ export interface TokenMetadata {
   scopes: string[];
 }
 
+export type HttpFetchFn = (url: string, init?: RequestInit) => Promise<Response>;
+
 export interface RateLimitState {
   platform: PlatformType;
   isRateLimited: boolean;

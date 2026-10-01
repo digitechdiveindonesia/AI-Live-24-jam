@@ -1,19 +1,67 @@
-import React, { useState } from 'react';
-import { BookOpen, CheckCircle, Search, HelpCircle, ShieldAlert, Sparkles } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { BookOpen, CheckCircle, Search, HelpCircle, ShieldAlert, Sparkles, Database } from 'lucide-react';
 import { Drawer } from '../components/Drawer';
 
 export const KnowledgePage: React.FC = () => {
   const [isTesterOpen, setIsTesterOpen] = useState(false);
   const [testQuery, setTestQuery] = useState('Apakah Serum X aman untuk kulit sensitif dan ibu hamil?');
-  const [testResult, setTestResult] = useState<{ answer: string; confidence: number; doc: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ answer: string; confidence: number; doc: string; method?: string } | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [knowledgeData, setKnowledgeData] = useState<{
+    documents: any[];
+    faqs: any[];
+    rules: any[];
+    isConfigured: boolean;
+  }>({
+    documents: [],
+    faqs: [],
+    rules: [],
+    isConfigured: false
+  });
 
-  const handleRunTest = (e: React.FormEvent) => {
+  useEffect(() => {
+    fetch('/api/knowledge')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setKnowledgeData({
+            documents: data.documents || [],
+            faqs: data.faqs || [],
+            rules: data.rules || [],
+            isConfigured: Boolean(data.isConfigured)
+          });
+        }
+      })
+      .catch(err => console.warn('Could not load knowledge:', err));
+  }, []);
+
+  const handleRunTest = async (e: React.FormEvent) => {
     e.preventDefault();
-    setTestResult({
-      answer: 'Serum X diformulasikan aman untuk kulit sensitif dengan Niacinamide 10% teruji dermatologis. Untuk ibu hamil, kandungan telah lolos standar BPOM namun tetap disarankan konsultasi dokter kandungan.',
-      confidence: 0.96,
-      doc: 'Serum X Comprehensive Product Knowledge v2.1 (Section 4)'
-    });
+    if (!testQuery.trim()) return;
+
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/knowledge/retrieve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: testQuery, sku: 'SKU-001' })
+      });
+      const data = await res.json();
+      if (data.success && data.result) {
+        const topFaq = data.result.matchedFaqs?.[0];
+        const topDoc = data.result.matchedDocuments?.[0];
+        setTestResult({
+          answer: topFaq ? `${topFaq.question}: ${topFaq.answer}` : (topDoc ? topDoc.content : 'No matching knowledge rule found.'),
+          confidence: data.result.confidence || 0.85,
+          doc: topDoc ? `${topDoc.title} (v${topDoc.version || '1.0'})` : (topFaq ? `Product FAQ (${topFaq.sku})` : 'Knowledge Base'),
+          method: data.result.retrievalMethod || 'LEXICAL_SEARCH'
+        });
+      }
+    } catch (err: any) {
+      console.error('Retrieval error:', err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -21,15 +69,25 @@ export const KnowledgePage: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-slate-100">Knowledge & Grounding Engine</h2>
-          <p className="text-xs text-slate-400">Authoritative Brand Rules, BPOM Claims, and Retrieval Pipeline</p>
+          <p className="text-xs text-slate-400">Authoritative Brand Rules, BPOM Claims, and Supabase Retrieval Pipeline</p>
         </div>
-        <button
-          onClick={() => setIsTesterOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-cyan-500 hover:bg-cyan-400 text-slate-900 transition-colors"
-        >
-          <Search className="w-3.5 h-3.5" />
-          <span>Open RAG Retrieval Tester</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <span className={`text-[11px] font-mono px-2.5 py-1 rounded-lg border flex items-center gap-1.5 ${
+            knowledgeData.isConfigured
+              ? 'text-emerald-400 bg-emerald-950/40 border-emerald-800'
+              : 'text-amber-400 bg-amber-950/40 border-amber-800'
+          }`}>
+            <Database className="w-3 h-3" />
+            <span>{knowledgeData.isConfigured ? 'SUPABASE POSTGRES' : 'LOCAL DEV SEED'}</span>
+          </span>
+          <button
+            onClick={() => setIsTesterOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-cyan-500 hover:bg-cyan-400 text-slate-900 transition-colors"
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span>Open RAG Retrieval Tester</span>
+          </button>
+        </div>
       </div>
 
       {/* Main Grid: 4 Clean Sections */}
@@ -39,82 +97,73 @@ export const KnowledgePage: React.FC = () => {
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
               <BookOpen className="w-4 h-4 text-cyan-400" />
-              <span>Knowledge Sources</span>
+              <span>Knowledge Sources ({knowledgeData.documents.length || 3})</span>
             </h3>
             <span className="px-2 py-0.5 rounded text-[11px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-800">
               ALL INDEXED
             </span>
           </div>
           <div className="space-y-2 text-xs">
-            <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex justify-between items-center">
-              <div>
-                <div className="font-semibold text-slate-200">Serum X Clinical Dossier</div>
-                <div className="text-[11px] text-slate-400">Dermatologist safety panel data</div>
-              </div>
-              <CheckCircle className="w-4 h-4 text-emerald-400" />
-            </div>
-            <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex justify-between items-center">
-              <div>
-                <div className="font-semibold text-slate-200">Logistics & COD SOP 2026</div>
-                <div className="text-[11px] text-slate-400">J&T, SiCepat shipping SLA & return policy</div>
-              </div>
-              <CheckCircle className="w-4 h-4 text-emerald-400" />
-            </div>
+            {knowledgeData.documents.length > 0 ? (
+              knowledgeData.documents.map((doc, idx) => (
+                <div key={doc.id || idx} className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex justify-between items-center">
+                  <div>
+                    <div className="font-semibold text-slate-200">{doc.title}</div>
+                    <div className="text-[11px] text-slate-400">{doc.category} • v{doc.version}</div>
+                  </div>
+                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+                </div>
+              ))
+            ) : (
+              <>
+                <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex justify-between items-center">
+                  <div>
+                    <div className="font-semibold text-slate-200">Serum X Clinical Dossier</div>
+                    <div className="text-[11px] text-slate-400">Dermatologist safety panel data</div>
+                  </div>
+                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex justify-between items-center">
+                  <div>
+                    <div className="font-semibold text-slate-200">Logistics & COD SOP 2026</div>
+                    <div className="text-[11px] text-slate-400">J&T, SiCepat shipping SLA & return policy</div>
+                  </div>
+                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+                </div>
+              </>
+            )}
           </div>
         </div>
 
-        {/* 2. FAQ grounding */}
+        {/* 2. Guardrail Claims & Grounding Rules */}
         <div className="bg-[#111827] border border-[#1E293B] rounded-2xl p-5 space-y-4">
-          <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-            <HelpCircle className="w-4 h-4 text-purple-400" />
-            <span>Product FAQ Grounding</span>
-          </h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-400" />
+              <span>Guardrail Rules ({knowledgeData.rules.length || 3})</span>
+            </h3>
+            <span className="px-2 py-0.5 rounded text-[11px] font-mono text-cyan-400 bg-cyan-950/40 border border-cyan-800">
+              ACTIVE ENFORCEMENT
+            </span>
+          </div>
           <div className="space-y-2 text-xs">
-            <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
-              <div className="font-semibold text-slate-200">Bisa COD seluruh Indonesia?</div>
-              <div className="text-[11px] text-slate-400 mt-1">Ya, seluruh Indonesia via J&T & SiCepat. Pesanan sebelum 16:00 dikirim hari yang sama.</div>
-            </div>
-            <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
-              <div className="font-semibold text-slate-200">Cara pakai Serum X?</div>
-              <div className="text-[11px] text-slate-400 mt-1">2-3 tetes pagi dan malam hari setelah toner sebelum moisturizer.</div>
-            </div>
+            {knowledgeData.rules.length > 0 ? (
+              knowledgeData.rules.map((rule, idx) => (
+                <div key={rule.id || idx} className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-200">{rule.rule_type}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">{rule.pattern}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">{rule.reason}</p>
+                </div>
+              ))
+            ) : (
+              <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 space-y-1">
+                <span className="font-semibold text-slate-200">BPOM Claim Compliance</span>
+                <p className="text-[11px] text-slate-400">Blocks prohibited cure guarantees or overpromising claims</p>
+              </div>
+            )}
           </div>
-        </div>
-
-        {/* 3. Brand Rules */}
-        <div className="bg-[#111827] border border-[#1E293B] rounded-2xl p-5 space-y-4">
-          <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-            <CheckCircle className="w-4 h-4 text-emerald-400" />
-            <span>Approved Brand Claims</span>
-          </h3>
-          <ul className="space-y-2 text-xs text-slate-300">
-            <li className="p-2.5 bg-slate-900/60 rounded-lg border border-slate-800 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              <span>Mencerahkan kulit tampak berseri dalam 14 hari pemakaian rutin.</span>
-            </li>
-            <li className="p-2.5 bg-slate-900/60 rounded-lg border border-slate-800 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              <span>Teruji klinis dermatologis untuk kulit sensitif dan non-comedogenic.</span>
-            </li>
-          </ul>
-        </div>
-
-        {/* 4. Restricted Claims */}
-        <div className="bg-[#111827] border border-[#1E293B] rounded-2xl p-5 space-y-4">
-          <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-red-400" />
-            <span>Restricted Claims (Strictly Blocked)</span>
-          </h3>
-          <ul className="space-y-2 text-xs text-slate-300">
-            <li className="p-2.5 bg-red-950/20 rounded-lg border border-red-900/40 flex items-center gap-2 text-red-300">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-              <span>Dilarang menjanjikan "Putih permanen instan dalam semalam".</span>
-            </li>
-            <li className="p-2.5 bg-red-950/20 rounded-lg border border-red-900/40 flex items-center gap-2 text-red-300">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-              <span>Dilarang mengklaim menyembuhkan penyakit medis kulit kronis / eksim.</span>
-            </li>
-          </ul>
         </div>
       </div>
 
@@ -138,10 +187,11 @@ export const KnowledgePage: React.FC = () => {
 
           <button
             type="submit"
+            disabled={isLoading}
             className="w-full py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5"
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Simulate Retrieval</span>
+            <span>{isLoading ? 'Retrieving Facts...' : 'Simulate Retrieval'}</span>
           </button>
 
           {testResult && (
@@ -151,7 +201,7 @@ export const KnowledgePage: React.FC = () => {
                 <span className="font-mono text-emerald-400 font-bold">{(testResult.confidence * 100).toFixed(0)}%</span>
               </div>
               <div>
-                <span className="text-slate-400 text-[11px]">Source Chunk</span>
+                <span className="text-slate-400 text-[11px]">Source Chunk ({testResult.method})</span>
                 <div className="text-cyan-300 font-mono text-[11px] mt-0.5">{testResult.doc}</div>
               </div>
               <div>

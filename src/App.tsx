@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -13,7 +13,8 @@ import { AnalyticsPage } from './pages/AnalyticsPage';
 import { SystemPage } from './pages/SystemPage';
 import { BroadcastSession, ProductItem, LiveChatMessage } from './types';
 
-const INITIAL_SESSION: BroadcastSession = {
+// Bootstrap development fallback data used only until initial API load resolves
+const BOOTSTRAP_SESSION: BroadcastSession = {
   id: 'LIVE-001',
   title: 'Sari Glow Mega Flash Sale Payday',
   runtime: '02:14:30',
@@ -29,7 +30,7 @@ const INITIAL_SESSION: BroadcastSession = {
   liveTranscript: 'Sedang menjelaskan promo Serum X: Dapatkan diskon 20% khusus checkout keranjang kuning sekarang juga ya kak!'
 };
 
-const INITIAL_PRODUCTS: ProductItem[] = [
+const BOOTSTRAP_PRODUCTS: ProductItem[] = [
   {
     id: 'prod-001',
     sku: 'SKU-001',
@@ -47,154 +48,188 @@ const INITIAL_PRODUCTS: ProductItem[] = [
     bpomNumber: 'NA18231900452',
     imageUrl: 'https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=500&auto=format&fit=crop&q=60',
     syncStatus: 'SYNCED'
-  },
-  {
-    id: 'prod-002',
-    sku: 'SKU-002',
-    title: 'Barrier Cream 5X Ceramide',
-    brand: 'Sari Glow Official',
-    category: 'Skincare',
-    basePrice: 119000,
-    strikePrice: 139000,
-    promoBadge: '15% OFF',
-    totalStock: 45,
-    isLowStock: false,
-    isOutOfStock: false,
-    isOnAir: false,
-    variants: [{ name: '30g Jar', stock: 45 }],
-    bpomNumber: 'NA18230104112',
-    imageUrl: 'https://images.unsplash.com/photo-1570172619644-dfd03ed5d881?w=500&auto=format&fit=crop&q=60',
-    syncStatus: 'SYNCED'
-  },
-  {
-    id: 'prod-003',
-    sku: 'SKU-003',
-    title: 'Micellar Water Deep Clean 250ml',
-    brand: 'Sari Glow Official',
-    category: 'Cleanser',
-    basePrice: 49000,
-    strikePrice: 65000,
-    promoBadge: '25% OFF',
-    totalStock: 12,
-    isLowStock: true,
-    isOutOfStock: false,
-    isOnAir: false,
-    variants: [{ name: '250ml Regular', stock: 12 }],
-    bpomNumber: 'NA18221203491',
-    imageUrl: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?w=500&auto=format&fit=crop&q=60',
-    syncStatus: 'SYNCED'
-  },
-  {
-    id: 'prod-004',
-    sku: 'SKU-004',
-    title: 'Sunscreen Aqua UV Shield SPF 50+',
-    brand: 'Sari Glow Official',
-    category: 'Suncare',
-    basePrice: 69000,
-    strikePrice: 89000,
-    promoBadge: '22% OFF',
-    totalStock: 6,
-    isLowStock: true,
-    isOutOfStock: false,
-    isOnAir: false,
-    variants: [{ name: '50g Tube', stock: 6 }],
-    bpomNumber: 'NA18231700982',
-    imageUrl: 'https://images.unsplash.com/photo-1598440947619-2c35fc9aa908?w=500&auto=format&fit=crop&q=60',
-    syncStatus: 'SYNCED'
   }
-];
-
-const INITIAL_MESSAGES: LiveChatMessage[] = [
-  {
-    id: 'msg-001',
-    author: 'Rina Sasmita',
-    handle: '@rina_beauty',
-    platform: 'TikTok',
-    text: 'Kak ini harganya berapa dan promonya sampai jam berapa ya?',
-    time: 'Baru saja',
-    intent: 'PRICE_QUESTION',
-    intentConfidence: 0.98,
-    verifiedSku: 'SKU-001',
-    guardrailStatus: 'APPROVED',
-    aiReply: 'Halo Kak Rina! Serum X Brightening Booster khusus promo live ini diskon 20%, dari Rp99.000 jadi Rp79.000 aja sampai live berakhir kak!',
-    latencyMs: 380
-  },
-  {
-    id: 'msg-002',
-    author: 'Budi Santoso',
-    handle: '@budisantoso88',
-    platform: 'Shopee',
-    text: 'Bisa COD ke Surabaya nggak kak? Estimasi sampai kapan?',
-    time: '1m lalu',
-    intent: 'SHIPPING_QUESTION',
-    intentConfidence: 0.96,
-    verifiedSku: 'SKU-001',
-    guardrailStatus: 'APPROVED',
-    aiReply: 'Bisa banget COD ke Surabaya Kak Budi! Pesan sebelum jam 4 sore langsung dikirim hari ini juga ya kak.',
-    latencyMs: 410
-  },
-  {
-    id: 'msg-003',
-    author: 'Nadia Putri',
-    handle: '@nadiaskincare',
-    platform: 'TikTok',
-    text: 'Buat kulit sensitif gampang merah aman gak min?',
-    time: '2m lalu',
-    intent: 'USAGE_QUESTION',
-    intentConfidence: 0.95,
-    verifiedSku: 'SKU-001',
-    guardrailStatus: 'APPROVED',
-    aiReply: 'Aman banget Kak Nadia! Formula Serum X teruji dermatologis dan mengandung Niacinamide lembut ramah kulit sensitif.',
-    latencyMs: 395
-  }
-];
-
-const INITIAL_SCRIPTS = [
-  { id: 'sb-1', step: 'HOOK', content: 'Kakak yang kulitnya kusam dan banyak noda hitam, stop scroll sekarang juga!', durationSec: 15, isActive: false },
-  { id: 'sb-2', step: 'PROBLEM', content: 'Udah coba berbagai skincare tapi wajah tetap kusam dan noda hitam membandel?', durationSec: 20, isActive: false },
-  { id: 'sb-3', step: 'SOLUTION', content: 'Kenalin Serum X Brightening Booster dengan Niacinamide 10% dan Alpha Arbutin murni!', durationSec: 25, isActive: false },
-  { id: 'sb-4', step: 'DEMO', content: 'Lihat teksturnya water-gel ringan banget, sekali oles langsung meresap nyaman tanpa lengket.', durationSec: 20, isActive: false },
-  { id: 'sb-5', step: 'PROMO', content: 'Khusus live sekarang diskon 20%! Dari harga normal Rp99.000 jadi cuma Rp79.000 aja!', durationSec: 20, isActive: true },
-  { id: 'sb-6', step: 'CTA', content: 'Sisa stok tinggal 23 botol lagi kak, klik keranjang kuning nomor satu sebelum kehabisan!', durationSec: 20, isActive: false }
 ];
 
 export const App: React.FC = () => {
-  const [session, setSession] = useState<BroadcastSession>(INITIAL_SESSION);
-  const [products, setProducts] = useState<ProductItem[]>(INITIAL_PRODUCTS);
-  const [selectedProduct, setSelectedProduct] = useState<ProductItem>(INITIAL_PRODUCTS[0]);
-  const [chatMessages, setChatMessages] = useState<LiveChatMessage[]>(INITIAL_MESSAGES);
-  const [scriptBlocks, setScriptBlocks] = useState(INITIAL_SCRIPTS);
+  const [session, setSession] = useState<BroadcastSession>(BOOTSTRAP_SESSION);
+  const [products, setProducts] = useState<ProductItem[]>(BOOTSTRAP_PRODUCTS);
+  const [selectedProduct, setSelectedProduct] = useState<ProductItem>(BOOTSTRAP_PRODUCTS[0]);
+  const [chatMessages, setChatMessages] = useState<LiveChatMessage[]>([]);
+  const [scriptBlocks, setScriptBlocks] = useState<any[]>([]);
+  const [recentEvents, setRecentEvents] = useState<any[]>([]);
 
-  const recentEvents = [
-    { id: '1', time: '14:22:04', text: 'AI Host seamlessly answered question from @rina_beauty', type: 'AI' },
-    { id: '2', time: '14:21:40', text: 'New order #ORD-9921 placed (Rp79.000 - TikTok Shop)', type: 'COMMERCE' },
-    { id: '3', time: '14:20:12', text: 'Promotional countdown entered final 15 minutes', type: 'HOST' },
-    { id: '4', time: '14:18:50', text: 'Inventory auto-synced with Shopee warehouse API', type: 'SYSTEM' },
-    { id: '5', time: '14:15:30', text: 'Dual stream bitrate stabilized at 6000 kbps 1080p60', type: 'STREAM' }
-  ];
+  // 1. Fetch Real Backend Data on Mount
+  useEffect(() => {
+    // A. Fetch Authoritative Products
+    fetch('/api/products')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.products && data.products.length > 0) {
+          const mapped: ProductItem[] = data.products.map((p: any, idx: number) => ({
+            id: p.sku || `prod-${idx}`,
+            sku: p.sku,
+            title: p.name,
+            brand: p.brand || 'Sari Glow Official',
+            category: p.category,
+            basePrice: p.salePrice || p.basePrice,
+            strikePrice: p.salePrice < p.basePrice ? p.basePrice : undefined,
+            promoBadge: p.promoTitle || (p.discountPercent > 0 ? `${p.discountPercent}% OFF` : undefined),
+            totalStock: p.totalStock ?? 0,
+            isLowStock: p.isLowStock ?? false,
+            isOutOfStock: p.isOutOfStock ?? false,
+            isOnAir: idx === 0,
+            variants: (p.variants || []).map((v: any) => ({ name: v.variant_name || v.name, stock: v.stock })),
+            bpomNumber: p.bpomNumber || '',
+            imageUrl: 'https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=500&auto=format&fit=crop&q=60',
+            syncStatus: 'SYNCED'
+          }));
+          setProducts(mapped);
+          setSelectedProduct(mapped[0]);
+        }
+      })
+      .catch(err => console.warn('[App] Could not load products:', err));
 
-  const handleToggleAi = () => {
-    setSession(prev => ({
-      ...prev,
-      isAiHostOn: !prev.isAiHostOn,
-      activeState: !prev.isAiHostOn ? 'PROMO' : 'PAUSED'
-    }));
+    // B. Fetch Live Session State
+    fetch('/api/session/status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.session) {
+          const s = data.session;
+          setSession(prev => ({
+            ...prev,
+            id: s.id || prev.id,
+            title: s.title || prev.title,
+            isLive: s.status === 'RUNNING' || s.status === 'LIVE',
+            isAiHostOn: s.is_ai_host_on ?? prev.isAiHostOn,
+            isPaused: s.is_paused ?? prev.isPaused,
+            isMicTakeover: s.is_mic_takeover ?? prev.isMicTakeover,
+            activeState: s.current_host_state || prev.activeState
+          }));
+        }
+      })
+      .catch(err => console.warn('[App] Could not load session status:', err));
+
+    // C. Fetch Conversations
+    fetch('/api/conversations')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.conversations) {
+          const msgs: LiveChatMessage[] = [];
+          data.conversations.forEach((conv: any) => {
+            (conv.recentMessages || []).forEach((m: any) => {
+              msgs.push({
+                id: m.message_id || `msg-${Date.now()}`,
+                author: conv.customer_name || 'Viewer',
+                handle: conv.handle || '@viewer',
+                platform: conv.platform || 'TikTok',
+                text: m.content || '',
+                time: 'Baru saja',
+                intent: m.metadata?.intent || 'GENERAL_QUESTION',
+                intentConfidence: 0.95,
+                verifiedSku: m.metadata?.productId || 'SKU-001',
+                guardrailStatus: m.metadata?.guardrailStatus || 'APPROVED',
+                aiReply: m.role === 'AI' ? m.content : undefined,
+                latencyMs: m.metadata?.latencyMs || 350
+              });
+            });
+          });
+          if (msgs.length > 0) setChatMessages(msgs);
+        }
+      })
+      .catch(err => console.warn('[App] Could not load conversations:', err));
+
+    // D. Fetch Selling Scripts
+    fetch('/api/scripts')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.scriptBlocks) {
+          const blocks = data.scriptBlocks.map((sb: any) => ({
+            id: sb.id,
+            step: sb.step_name,
+            content: sb.content,
+            durationSec: sb.duration_sec,
+            isActive: sb.is_active
+          }));
+          setScriptBlocks(blocks);
+        }
+      })
+      .catch(err => console.warn('[App] Could not load scripts:', err));
+
+    // E. Fetch Events
+    fetch('/api/events')
+      .then(res => res.json())
+      .then(data => {
+        if (data.auditLogs) {
+          const evts = data.auditLogs.map((log: any) => ({
+            id: log.id,
+            time: new Date(log.timestamp).toLocaleTimeString('id-ID'),
+            text: `${log.action}: ${log.target}`,
+            type: log.operator === 'SYSTEM' ? 'SYSTEM' : 'AI'
+          }));
+          setRecentEvents(evts);
+        }
+      })
+      .catch(err => console.warn('[App] Could not load events:', err));
+  }, []);
+
+  const handleToggleAi = async () => {
+    try {
+      const res = await fetch('/api/host/toggle', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setSession(prev => ({
+          ...prev,
+          isAiHostOn: data.isAiHostOn,
+          activeState: data.state
+        }));
+      }
+    } catch {
+      setSession(prev => ({ ...prev, isAiHostOn: !prev.isAiHostOn }));
+    }
   };
 
-  const handleTogglePause = () => {
-    setSession(prev => ({ ...prev, isPaused: !prev.isPaused }));
+  const handleTogglePause = async () => {
+    const isPaused = session.isPaused;
+    const endpoint = isPaused ? '/api/session/resume' : '/api/session/pause';
+    try {
+      const res = await fetch(endpoint, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setSession(prev => ({ ...prev, isPaused: !isPaused }));
+      }
+    } catch {
+      setSession(prev => ({ ...prev, isPaused: !isPaused }));
+    }
   };
 
-  const handleToggleMic = () => {
-    setSession(prev => ({
-      ...prev,
-      isMicTakeover: !prev.isMicTakeover,
-      activeState: !prev.isMicTakeover ? 'HUMAN_TAKEOVER' : 'RETURN_TO_SELLING'
-    }));
+  const handleToggleMic = async () => {
+    try {
+      const res = await fetch('/api/host/takeover', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setSession(prev => ({
+          ...prev,
+          isMicTakeover: data.isMicTakeover,
+          activeState: data.state
+        }));
+      }
+    } catch {
+      setSession(prev => ({ ...prev, isMicTakeover: !prev.isMicTakeover }));
+    }
   };
 
-  const handleEmergencyStop = () => {
+  const handleEmergencyStop = async () => {
     if (window.confirm('EMERGENCY HALT: Are you sure you want to stop the live stream and halt the AI Host immediately?')) {
+      try {
+        await fetch('/api/session/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'EMERGENCY_HALT', cancelCurrentResponse: true })
+        });
+      } catch (err) {
+        console.error('Stop error:', err);
+      }
       setSession(prev => ({
         ...prev,
         isLive: false,
@@ -204,26 +239,54 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSendMessage = (text: string) => {
-    const newMsg: LiveChatMessage = {
-      id: `msg-${Date.now()}`,
-      author: 'Operator Test',
-      handle: '@operator',
-      platform: 'TikTok',
-      text,
-      time: 'Baru saja',
-      intent: 'GENERAL_QUESTION',
-      intentConfidence: 0.94,
-      verifiedSku: selectedProduct.sku,
-      guardrailStatus: 'APPROVED',
-      aiReply: `Menjawab langsung untuk ${selectedProduct.title}: Produk ready stok ${selectedProduct.totalStock} pcs dan bisa langsung checkout di keranjang kuning ya kak!`,
-      latencyMs: 360
-    };
-    setChatMessages(prev => [newMsg, ...prev]);
+  const handleSendMessage = async (text: string) => {
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          author: 'Operator Test',
+          handle: '@operator',
+          platform: 'TikTok',
+          sku: selectedProduct.sku,
+          skipTtsDelay: true
+        })
+      });
+      const data = await res.json();
+
+      const newMsg: LiveChatMessage = {
+        id: `msg-${Date.now()}`,
+        author: 'Operator Test',
+        handle: '@operator',
+        platform: 'TikTok',
+        text,
+        time: 'Baru saja',
+        intent: data.data?.intent || 'GENERAL_QUESTION',
+        intentConfidence: data.data?.confidence || 0.95,
+        verifiedSku: selectedProduct.sku,
+        guardrailStatus: data.data?.guardrailStatus || 'APPROVED',
+        aiReply: data.data?.response || `Menjawab untuk ${selectedProduct.title}: Produk siap checkout di keranjang kuning ya kak!`,
+        latencyMs: data.data?.latencyMs || 340
+      };
+      setChatMessages(prev => [newMsg, ...prev]);
+    } catch (err) {
+      console.error('Chat error:', err);
+    }
   };
 
-  const handleUpdateStock = (sku: string, newStock: number) => {
-    setProducts(prev => prev.map(p => p.sku === sku ? { ...p, totalStock: newStock } : p));
+  const handleUpdateStock = async (sku: string, newStock: number) => {
+    try {
+      await fetch(`/api/products/${sku}/stock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newStock })
+      });
+    } catch (err) {
+      console.warn('Could not persist stock:', err);
+    }
+
+    setProducts(prev => prev.map(p => (p.sku === sku ? { ...p, totalStock: newStock } : p)));
     if (selectedProduct.sku === sku) {
       setSelectedProduct(prev => ({ ...prev, totalStock: newStock }));
     }

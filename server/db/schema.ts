@@ -323,6 +323,22 @@ export interface VoiceTelemetry {
 export type PlatformType = 'TIKTOK' | 'SHOPEE' | 'OTHER';
 
 export type PlatformCapabilityType =
+  | 'PRODUCT_READ'
+  | 'PRODUCT_WRITE'
+  | 'INVENTORY_READ'
+  | 'INVENTORY_WRITE'
+  | 'ORDER_READ'
+  | 'ORDER_WRITE'
+  | 'PROMOTION_READ'
+  | 'PROMOTION_WRITE'
+  | 'CHAT_READ'
+  | 'CHAT_WRITE'
+  | 'LIVE_READ'
+  | 'LIVE_CREATE'
+  | 'LIVE_CONTROL'
+  | 'WEBHOOKS'
+  | 'AFFILIATE'
+  | 'OTHER'
   | 'ACCOUNT_ACCESS'
   | 'SHOP_ACCESS'
   | 'LIVE'
@@ -335,7 +351,6 @@ export type PlatformCapabilityType =
   | 'INVENTORY_DATA'
   | 'INVENTORY_SYNC'
   | 'ORDER_DATA'
-  | 'WEBHOOKS'
   | 'LIVE_ANALYTICS';
 
 export type PlatformCapabilityStatus =
@@ -348,6 +363,18 @@ export type PlatformCapabilityStatus =
   | 'UNKNOWN'
   | 'ERROR';
 
+export type PlatformErrorCode =
+  | 'AUTH_FAILED'
+  | 'TOKEN_EXPIRED'
+  | 'TOKEN_REFRESH_FAILED'
+  | 'PERMISSION_DENIED'
+  | 'RATE_LIMITED'
+  | 'NOT_FOUND'
+  | 'PLATFORM_UNAVAILABLE'
+  | 'UNSUPPORTED_CAPABILITY'
+  | 'INVALID_REQUEST'
+  | 'UNKNOWN_PLATFORM_ERROR';
+
 export interface PlatformCapability {
   platform: PlatformType;
   capability: PlatformCapabilityType;
@@ -358,40 +385,133 @@ export interface PlatformCapability {
 }
 
 export type PlatformConnectionStatus =
+  | 'NOT_CONFIGURED'
+  | 'AUTHORIZATION_REQUIRED'
+  | 'AUTHORIZING'
   | 'CONNECTED'
+  | 'TOKEN_EXPIRING'
+  | 'REFRESHING'
+  | 'REQUIRES_REAUTH'
+  | 'DEGRADED'
+  | 'ERROR'
   | 'DISCONNECTED'
   | 'CONNECTING'
-  | 'ERROR'
-  | 'NOT_CONFIGURED'
   | 'UNKNOWN';
 
 export interface PlatformConnection {
   id: string;
   platform: PlatformType;
+  account_type?: string;
+  external_account_id?: string | null;
+  external_shop_id?: string | null;
+  external_merchant_id?: string | null;
+  display_name?: string | null;
+  region?: string | null;
   status: PlatformConnectionStatus;
-  accountId: string | null;
-  shopId: string | null;
-  region: string | null;
-  environment: 'SANDBOX' | 'PRODUCTION' | 'MOCK' | 'DEVELOPMENT' | 'STAGING';
-  connectedAt: string | null;
-  lastHealthCheck: string | null;
-  lastError: string | null;
-  createdAt: string;
-  updatedAt: string;
+  scopes?: string[];
+  capabilities?: Record<string, PlatformCapabilityStatus> | PlatformCapability[];
+  access_token_encrypted?: string | null;
+  refresh_token_encrypted?: string | null;
+  access_token_expires_at?: string | null;
+  refresh_token_expires_at?: string | null;
+  last_verified_at?: string | null;
+  last_error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+
+  // Backward compatibility fields
+  accountId?: string | null;
+  shopId?: string | null;
+  environment?: 'SANDBOX' | 'PRODUCTION' | 'MOCK' | 'DEVELOPMENT' | 'STAGING';
+  connectedAt?: string | null;
+  lastHealthCheck?: string | null;
+  lastError?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 }
+
+export type SyncConflictType =
+  | 'INVENTORY_CONFLICT'
+  | 'PRICE_CONFLICT'
+  | 'PROMOTION_CONFLICT'
+  | 'PRODUCT_MAPPING_CONFLICT'
+  | 'VARIANT_MAPPING_CONFLICT'
+  | 'EXTERNAL_PRODUCT_MISSING'
+  | 'LOCAL_PRODUCT_MISSING'
+  | 'UNKNOWN_CONFLICT'
+  | 'INVENTORY_MISMATCH'
+  | 'PRICE_DISCREPANCY'
+  | 'STATUS_MISMATCH';
+
+export type SyncConflictStatus =
+  | 'OPEN'
+  | 'RESOLVED'
+  | 'IGNORED'
+  | 'FAILED'
+  | 'RESOLVED_INTERNAL'
+  | 'RESOLVED_MANUAL';
+
+export type SyncResolutionType =
+  | 'LOCAL_AUTHORITATIVE'
+  | 'EXTERNAL_OVERWRITE'
+  | 'MANUAL_VALUE';
 
 export interface SyncConflict {
   id: string;
-  sku: string;
   platform: PlatformType;
-  conflictType: 'INVENTORY_MISMATCH' | 'PRICE_DISCREPANCY' | 'STATUS_MISMATCH';
-  internalValue: any;
-  platformValue: any;
-  status: 'OPEN' | 'RESOLVED_INTERNAL' | 'RESOLVED_MANUAL';
-  detectedAt: string;
-  resolvedAt: string | null;
-  notes: string;
+  entity_type: 'PRODUCT' | 'VARIANT' | 'INVENTORY' | 'PROMOTION';
+  entity_id: string;
+  external_id: string;
+  conflict_type: SyncConflictType;
+  local_value: any;
+  external_value: any;
+  status: SyncConflictStatus;
+  resolution?: SyncResolutionType | null;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
+  fingerprint: string;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+
+  // Backward compatibility fields for legacy Phase 3A tests/code
+  sku?: string;
+  conflictType?: string;
+  internalValue?: any;
+  platformValue?: any;
+  detectedAt?: string;
+  resolvedAt?: string | null;
 }
+
+export interface ExternalProductMapping {
+  id: string;
+  product_id: string;
+  variant_id?: string | null;
+  platform: PlatformType;
+  external_product_id: string;
+  external_variant_id?: string | null;
+  external_sku: string;
+  last_synced_at: string;
+  metadata: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncRun {
+  id: string;
+  platform: PlatformType;
+  mode: 'MANUAL' | 'SCHEDULED' | 'WEBHOOK_TRIGGERED';
+  status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'PARTIAL';
+  is_simulated: boolean;
+  records_examined: number;
+  conflicts_detected: number;
+  conflicts_created: number;
+  started_at: string;
+  completed_at?: string | null;
+  duration_ms?: number;
+  errors?: string[];
+}
+
 
 // Phase 3B Additions
 export type TokenState =
@@ -445,13 +565,15 @@ export interface PlatformResponseRouteResult {
 // ==========================================
 
 export type CloudRuntimeStatus =
-  | 'OFF'
+  | 'NOT_CONFIGURED'
   | 'STARTING'
   | 'RUNNING'
   | 'STOPPING'
   | 'STOPPED'
   | 'DEGRADED'
-  | 'FAILED';
+  | 'FAILED'
+  | 'UNKNOWN'
+  | 'OFF';
 
 export interface LiveSchedule {
   id: string;
@@ -459,11 +581,22 @@ export interface LiveSchedule {
   enabled: boolean;
   timezone: string; // IANA timezone e.g. "Asia/Jakarta"
   daysOfWeek: string[]; // ["MON","TUE","WED","THU","FRI"]
+  days_of_week?: string[];
   startTime: string; // "10:00"
+  start_time?: string;
   endTime: string; // "20:00"
+  end_time?: string;
+  grace_period_minutes?: number;
+  gracePeriodMinutes?: number;
+  auto_start?: boolean;
+  autoStart?: boolean;
+  auto_stop?: boolean;
+  autoStop?: boolean;
   sessionConfigId?: string;
   createdAt: string;
+  created_at?: string;
   updatedAt: string;
+  updated_at?: string;
 }
 
 export type ScheduleStopReason =
@@ -491,9 +624,13 @@ export interface ScheduleHistory {
 export interface RuntimeLock {
   lockId: string;
   sessionId: string;
-  acquiredBy: string; // e.g. instance-id
+  acquiredBy: string; // instance-id or owner
+  owner?: string;
   acquiredAt: string;
+  acquired_at?: string;
   expiresAt: string;
+  expires_at?: string;
+  status?: 'ACQUIRED' | 'RELEASED' | 'EXPIRED';
 }
 
 export interface UsageTelemetry {

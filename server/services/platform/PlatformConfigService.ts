@@ -45,11 +45,9 @@ export class PlatformConfigService {
     if (platform === 'TIKTOK') {
       if (!this.getEnvValue('TIKTOK_CLIENT_KEY')) missing.push('TIKTOK_CLIENT_KEY');
       if (!this.getEnvValue('TIKTOK_CLIENT_SECRET')) missing.push('TIKTOK_CLIENT_SECRET');
-      if (!this.getEnvValue('TIKTOK_REDIRECT_URI')) missing.push('TIKTOK_REDIRECT_URI');
     } else if (platform === 'SHOPEE') {
       if (!this.getEnvValue('SHOPEE_PARTNER_ID')) missing.push('SHOPEE_PARTNER_ID');
       if (!this.getEnvValue('SHOPEE_PARTNER_KEY')) missing.push('SHOPEE_PARTNER_KEY');
-      if (!this.getEnvValue('SHOPEE_REDIRECT_URI')) missing.push('SHOPEE_REDIRECT_URI');
     }
     return missing;
   }
@@ -62,8 +60,8 @@ export class PlatformConfigService {
     const missing = this.getMissingFields(platform);
     const redirectUri =
       platform === 'TIKTOK'
-        ? this.getEnvValue('TIKTOK_REDIRECT_URI')
-        : this.getEnvValue('SHOPEE_REDIRECT_URI');
+        ? (this.getEnvValue('TIKTOK_REDIRECT_URI') || '/api/platforms/tiktok-shop/callback')
+        : (this.getEnvValue('SHOPEE_REDIRECT_URI') || '/api/platforms/shopee/callback');
 
     return {
       platform,

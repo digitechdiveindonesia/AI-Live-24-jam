@@ -5,9 +5,16 @@ export interface SchedulerProvider {
   readonly name: string;
   readonly isCloud: boolean;
 
-  registerJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }>;
+  // Primary Phase 3D.4 Methods
+  createJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }>;
   updateJob(schedule: LiveSchedule): Promise<{ success: boolean; message: string }>;
   deleteJob(scheduleId: string): Promise<{ success: boolean; message: string }>;
+  pauseJob(scheduleId: string): Promise<{ success: boolean; message: string }>;
+  resumeJob(scheduleId: string): Promise<{ success: boolean; message: string }>;
+  getJobStatus(scheduleId: string): Promise<{ status: string; scheduleId: string; isConfigured: boolean; message?: string }>;
+
+  // Compatibility Methods
+  registerJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }>;
   triggerJob(scheduleId: string, action: 'START' | 'STOP'): Promise<{ success: boolean; message: string }>;
   listJobs(): Promise<any[]>;
 }
@@ -16,27 +23,31 @@ export class MockSchedulerProvider implements SchedulerProvider {
   public readonly name = 'MockCloudScheduler';
   public readonly isCloud = false;
 
-  private jobs: Map<string, { scheduleId: string; cronExpression: string; targetUrl: string }> = new Map();
+  private jobs: Map<string, { scheduleId: string; cronExpression: string; targetUrl: string; paused: boolean }> = new Map();
 
   constructor() {
     this.jobs.set('sched-daily-01', {
       scheduleId: 'sched-daily-01',
       cronExpression: '0 10 * * 1-5',
-      targetUrl: 'http://localhost:3000/api/scheduler/trigger'
+      targetUrl: 'http://localhost:3000/api/scheduler/trigger',
+      paused: false
     });
   }
 
-  public async registerJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }> {
+  public async createJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }> {
     const jobId = `job-${schedule.id}`;
-    const [h, m] = schedule.startTime.split(':');
+    const startTime = schedule.startTime || schedule.start_time || '10:00';
+    const [h, m] = startTime.split(':');
     const daysMap: Record<string, string> = { SUN: '0', MON: '1', TUE: '2', WED: '3', THU: '4', FRI: '5', SAT: '6' };
-    const days = schedule.daysOfWeek.map(d => daysMap[d] || '*').join(',');
+    const daysList = schedule.daysOfWeek || schedule.days_of_week || ['MON'];
+    const days = daysList.map(d => daysMap[d.toUpperCase()] || '*').join(',');
     const cron = `${m} ${h} * * ${days}`;
 
     this.jobs.set(schedule.id, {
       scheduleId: schedule.id,
       cronExpression: cron,
-      targetUrl: `/api/scheduler/trigger`
+      targetUrl: `/api/scheduler/trigger`,
+      paused: !schedule.enabled
     });
 
     db.logAudit('SCHEDULER_JOB_REGISTERED', 'SYSTEM', `Mock scheduler job registered: ${jobId} (${cron})`);
@@ -48,8 +59,12 @@ export class MockSchedulerProvider implements SchedulerProvider {
     };
   }
 
+  public async registerJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }> {
+    return this.createJob(schedule);
+  }
+
   public async updateJob(schedule: LiveSchedule): Promise<{ success: boolean; message: string }> {
-    await this.registerJob(schedule);
+    await this.createJob(schedule);
     return {
       success: true,
       message: `SIMULATED: Cloud Scheduler job updated for ${schedule.id}`
@@ -62,6 +77,43 @@ export class MockSchedulerProvider implements SchedulerProvider {
     return {
       success: true,
       message: `SIMULATED: Scheduler job for ${scheduleId} deleted`
+    };
+  }
+
+  public async pauseJob(scheduleId: string): Promise<{ success: boolean; message: string }> {
+    const job = this.jobs.get(scheduleId);
+    if (job) {
+      job.paused = true;
+    }
+    db.logAudit('SCHEDULER_JOB_PAUSED', 'OPERATOR', `Scheduler job paused for ${scheduleId}`);
+    return {
+      success: true,
+      message: `SIMULATED: Scheduler job ${scheduleId} paused`
+    };
+  }
+
+  public async resumeJob(scheduleId: string): Promise<{ success: boolean; message: string }> {
+    const job = this.jobs.get(scheduleId);
+    if (job) {
+      job.paused = false;
+    }
+    db.logAudit('SCHEDULER_JOB_RESUMED', 'OPERATOR', `Scheduler job resumed for ${scheduleId}`);
+    return {
+      success: true,
+      message: `SIMULATED: Scheduler job ${scheduleId} resumed`
+    };
+  }
+
+  public async getJobStatus(scheduleId: string): Promise<{ status: string; scheduleId: string; isConfigured: boolean; message?: string }> {
+    const job = this.jobs.get(scheduleId);
+    if (!job) {
+      return { status: 'NOT_FOUND', scheduleId, isConfigured: true, message: 'Job not found in mock scheduler' };
+    }
+    return {
+      status: job.paused ? 'PAUSED' : 'ENABLED',
+      scheduleId,
+      isConfigured: true,
+      message: `Job ${scheduleId} is active (Cron: ${job.cronExpression})`
     };
   }
 
@@ -83,10 +135,10 @@ export class CloudSchedulerProvider implements SchedulerProvider {
   public readonly isCloud = true;
 
   private isConfigured(): boolean {
-    return !!(process.env.GCP_PROJECT_ID && process.env.CLOUD_SCHEDULER_LOCATION);
+    return !!(process.env.GCP_PROJECT_ID && (process.env.CLOUD_SCHEDULER_REGION || process.env.CLOUD_SCHEDULER_LOCATION));
   }
 
-  public async registerJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }> {
+  public async createJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }> {
     if (!this.isConfigured()) {
       return {
         success: false,
@@ -101,6 +153,10 @@ export class CloudSchedulerProvider implements SchedulerProvider {
     };
   }
 
+  public async registerJob(schedule: LiveSchedule): Promise<{ success: boolean; jobId?: string; message: string }> {
+    return this.createJob(schedule);
+  }
+
   public async updateJob(schedule: LiveSchedule): Promise<{ success: boolean; message: string }> {
     if (!this.isConfigured()) return { success: false, message: 'Cloud Scheduler not configured' };
     return { success: true, message: 'Cloud Scheduler job updated' };
@@ -109,6 +165,33 @@ export class CloudSchedulerProvider implements SchedulerProvider {
   public async deleteJob(scheduleId: string): Promise<{ success: boolean; message: string }> {
     if (!this.isConfigured()) return { success: false, message: 'Cloud Scheduler not configured' };
     return { success: true, message: 'Cloud Scheduler job deleted' };
+  }
+
+  public async pauseJob(scheduleId: string): Promise<{ success: boolean; message: string }> {
+    if (!this.isConfigured()) return { success: false, message: 'Cloud Scheduler not configured' };
+    return { success: true, message: `Cloud Scheduler job paused for ${scheduleId}` };
+  }
+
+  public async resumeJob(scheduleId: string): Promise<{ success: boolean; message: string }> {
+    if (!this.isConfigured()) return { success: false, message: 'Cloud Scheduler not configured' };
+    return { success: true, message: `Cloud Scheduler job resumed for ${scheduleId}` };
+  }
+
+  public async getJobStatus(scheduleId: string): Promise<{ status: string; scheduleId: string; isConfigured: boolean; message?: string }> {
+    if (!this.isConfigured()) {
+      return {
+        status: 'NOT_CONFIGURED',
+        scheduleId,
+        isConfigured: false,
+        message: 'Google Cloud Scheduler credentials absent'
+      };
+    }
+    return {
+      status: 'ENABLED',
+      scheduleId,
+      isConfigured: true,
+      message: 'Cloud Scheduler job operational'
+    };
   }
 
   public async triggerJob(scheduleId: string, action: 'START' | 'STOP'): Promise<{ success: boolean; message: string }> {

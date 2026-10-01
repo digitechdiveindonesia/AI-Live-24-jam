@@ -6,6 +6,8 @@ import {
 import { platformManager } from './PlatformManager';
 import { platformConfigService } from './PlatformConfigService';
 import { eventService } from '../EventService';
+import { commerceSyncWorker } from './CommerceSyncWorker';
+import { eventRepository } from '../../repositories';
 import { db } from '../../db';
 
 export interface WebhookEventRecord {
@@ -15,6 +17,8 @@ export interface WebhookEventRecord {
   processedAt: string;
   payload: any;
 }
+
+export type WebhookVerificationStatus = 'VERIFIED' | 'NOT_CONFIGURED' | 'UNSUPPORTED' | 'INVALID';
 
 export class PlatformWebhookService {
   private static instance: PlatformWebhookService;
@@ -36,13 +40,14 @@ export class PlatformWebhookService {
 
   /**
    * Validates webhook signature and replay timestamp.
+   * Reports explicit status: VERIFIED, NOT_CONFIGURED, UNSUPPORTED, or INVALID.
    */
   public verifyWebhookRequest(
     platform: PlatformType,
     payload: any,
     signature?: string,
     timestampHeader?: string
-  ): { valid: boolean; reason?: string } {
+  ): { valid: boolean; reason?: string; verificationStatus: WebhookVerificationStatus } {
     const creds = platformConfigService.getInternalCredentials(platform);
     const isProd = platformConfigService.getEnvironment() === 'PRODUCTION';
 
@@ -59,51 +64,58 @@ export class PlatformWebhookService {
           'SECURITY',
           `Webhook for ${platform} rejected: Timestamp expired (drift: ${timeDiff}ms > ${this.maxReplayWindowMs}ms)`
         );
-        return { valid: false, reason: 'TIMESTAMP_EXPIRED_REPLAY_DETECTED' };
+        return { valid: false, reason: 'TIMESTAMP_EXPIRED_REPLAY_DETECTED', verificationStatus: 'INVALID' };
       }
     }
 
-    // 2. Signature Validation
+    // 2. Secret Configuration Check
     const secret = platform === 'TIKTOK' ? creds?.clientSecret : creds?.partnerKey;
+
+    if (!secret) {
+      // In non-production, if secrets are not set up, mark as NOT_CONFIGURED
+      if (isProd) {
+        db.logAudit('WEBHOOK_REJECTED', 'SECURITY', `Webhook rejected for ${platform}: Secret credentials not configured`);
+        return { valid: false, reason: 'CREDENTIALS_NOT_CONFIGURED', verificationStatus: 'NOT_CONFIGURED' };
+      }
+      return { valid: true, reason: 'Platform webhook secret not configured; running in simulated mode', verificationStatus: 'NOT_CONFIGURED' };
+    }
 
     if (!signature) {
       if (isProd) {
         db.logAudit('WEBHOOK_REJECTED', 'SECURITY', `Webhook rejected for ${platform}: Missing signature header`);
-        return { valid: false, reason: 'MISSING_SIGNATURE' };
+        return { valid: false, reason: 'MISSING_SIGNATURE', verificationStatus: 'INVALID' };
       }
-      // Allowed in development/testing if header not passed
-      return { valid: true };
+      return { valid: true, verificationStatus: 'NOT_CONFIGURED' };
     }
 
-    if (secret) {
-      const payloadString = typeof payload === 'string' ? payload : JSON.stringify(payload);
-      const computedHmac = crypto.createHmac('sha256', secret).update(payloadString).digest('hex');
+    const payloadString = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    const computedHmac = crypto.createHmac('sha256', secret).update(payloadString).digest('hex');
 
-      // Constant time comparison to prevent timing attacks
-      if (signature !== computedHmac && signature !== `mock_valid_${platform.toLowerCase()}`) {
-        db.logAudit('WEBHOOK_REJECTED', 'SECURITY', `Webhook signature mismatch for ${platform}`);
-        return { valid: false, reason: 'SIGNATURE_MISMATCH' };
-      }
+    // Constant time comparison to prevent timing attacks
+    if (signature !== computedHmac && signature !== `mock_valid_${platform.toLowerCase()}`) {
+      db.logAudit('WEBHOOK_REJECTED', 'SECURITY', `Webhook signature mismatch for ${platform}`);
+      return { valid: false, reason: 'SIGNATURE_MISMATCH', verificationStatus: 'INVALID' };
     }
 
     db.logAudit('WEBHOOK_VERIFIED', 'SECURITY', `Webhook verified for ${platform}`);
-    return { valid: true };
+    return { valid: true, verificationStatus: 'VERIFIED' };
   }
 
   /**
-   * Process incoming platform webhook with verification and idempotency check.
+   * Process incoming platform webhook with verification, idempotency check, persistence, and sync reconciliation.
    */
   public async handleWebhook(
     platform: PlatformType,
     payload: any,
     signature?: string,
     timestampHeader?: string
-  ): Promise<PlatformWebhookResult> {
+  ): Promise<PlatformWebhookResult & { verificationStatus?: WebhookVerificationStatus }> {
     const adapter = platformManager.getAdapter(platform);
     if (!adapter) {
       return {
         handled: false,
-        error: `No adapter registered for platform: ${platform}`
+        error: `No adapter registered for platform: ${platform}`,
+        verificationStatus: 'UNSUPPORTED'
       };
     }
 
@@ -112,7 +124,8 @@ export class PlatformWebhookService {
     if (!verification.valid) {
       return {
         handled: false,
-        error: `Webhook verification failed: ${verification.reason}`
+        error: `Webhook verification failed: ${verification.reason}`,
+        verificationStatus: verification.verificationStatus
       };
     }
 
@@ -141,20 +154,30 @@ export class PlatformWebhookService {
         handled: true,
         eventId,
         eventType,
-        deduplicated: true
+        deduplicated: true,
+        verificationStatus: verification.verificationStatus
       };
     }
 
     // Record in idempotency cache
     this.recordEventId(eventId);
 
-    // 4. Delegate to Adapter for platform-specific parsing
+    // 4. Persist Webhook Event to EventRepository
+    await eventRepository.recordHostEvent({
+      sessionId: 'LIVE-001',
+      eventType: `WEBHOOK_${eventType}`,
+      stateFrom: 'STANDBY',
+      stateTo: 'ACTIVE',
+      trigger: `${platform}:${eventId}`
+    });
+
+    // 5. Delegate to Adapter for platform-specific parsing
     const adapterResult = await adapter.handleWebhook(payload, signature);
     if (!adapterResult.handled) {
-      return adapterResult;
+      return { ...adapterResult, verificationStatus: verification.verificationStatus };
     }
 
-    // 5. Process event based on normalized domain
+    // 6. Process event based on normalized domain & Trigger Sync Reconciliation
     switch (eventType) {
       case 'LIVE_COMMENT':
       case 'comment.create':
@@ -190,25 +213,15 @@ export class PlatformWebhookService {
       }
 
       case 'INVENTORY_CHANGED':
-      case 'stock.update': {
-        const sku = payload.data?.sku || payload.sku;
-        const reportedStock = payload.data?.stock ?? payload.stock;
-        if (sku && reportedStock !== undefined) {
-          const inv = db.getInventory(sku);
-          if (inv && inv.available_stock !== reportedStock) {
-            // Discrepancy detected: single source of truth protection
-            db.addSyncConflict({
-              sku,
-              platform,
-              conflictType: 'INVENTORY_MISMATCH',
-              internalValue: { availableStock: inv.available_stock },
-              platformValue: { reportedStock },
-              status: 'OPEN',
-              resolvedAt: null,
-              notes: `Platform reported ${reportedStock} units, but internal authoritative inventory is ${inv.available_stock}.`
-            });
-          }
-        }
+      case 'stock.update':
+      case 'PRODUCT_CHANGED':
+      case 'product.update':
+      case 'PROMOTION_CHANGED':
+      case 'promotion.update': {
+        // Trigger automated reconciliation via CommerceSyncWorker
+        commerceSyncWorker.runSync(platform, 'WEBHOOK_TRIGGERED').catch(err => {
+          console.error(`[Webhook] Sync trigger failed for ${platform}:`, err.message);
+        });
         break;
       }
 
@@ -223,34 +236,34 @@ export class PlatformWebhookService {
       }
     }
 
-    db.logAudit(
-      'WEBHOOK_PROCESSED',
-      'SYSTEM',
-      `Processed webhook ${eventId} [${eventType}] from ${platform}`
-    );
-
     return {
       handled: true,
       eventId,
       eventType,
-      deduplicated: false
+      deduplicated: false,
+      verificationStatus: verification.verificationStatus
     };
   }
 
   private recordEventId(eventId: string): void {
     if (this.processedEventIds.size >= this.maxCacheSize) {
-      const keys = Array.from(this.processedEventIds.keys()).slice(0, 200);
-      keys.forEach(k => this.processedEventIds.delete(k));
+      // Evict oldest entries
+      const oldestKey = this.processedEventIds.keys().next().value;
+      if (oldestKey) this.processedEventIds.delete(oldestKey);
     }
     this.processedEventIds.set(eventId, Date.now());
   }
 
-  public isProcessed(eventId: string): boolean {
+  public isEventProcessed(eventId: string): boolean {
     return this.processedEventIds.has(eventId);
   }
 
-  public clearCache(): void {
+  public clearEventCache(): void {
     this.processedEventIds.clear();
+  }
+
+  public clearCache(): void {
+    this.clearEventCache();
   }
 }
 

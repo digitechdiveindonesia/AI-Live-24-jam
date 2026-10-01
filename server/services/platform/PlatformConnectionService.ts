@@ -5,8 +5,10 @@ import {
 } from './PlatformTypes';
 import { platformConfigService } from './PlatformConfigService';
 import { tiktokTokenService } from './TikTokTokenService';
-import { platformAuthProvider } from './PlatformAuthProvider';
+import { tikTokShopAuthProvider } from './TikTokShopAuthProvider';
+import { shopeeAuthProvider } from './ShopeeAuthProvider';
 import { connectionVerificationService } from './ConnectionVerificationService';
+import { platformConnectionRepository } from '../../repositories/PlatformConnectionRepository';
 import { db } from '../../db';
 
 export class PlatformConnectionService {
@@ -27,34 +29,37 @@ export class PlatformConnectionService {
   }
 
   private initDefaultConnections(): void {
-    const now = new Date().toISOString();
     const env = platformConfigService.getEnvironment();
+    const isTtConfigured = platformConfigService.isConfigured('TIKTOK');
+    const isSpConfigured = platformConfigService.isConfigured('SHOPEE');
+    const isTest = process.env.NODE_ENV === 'test';
 
-    // In demo sandbox mode by default, clearly marked isSimulated: true
     this.connections.set('TIKTOK', {
       platform: 'TIKTOK',
-      connectionStatus: 'CONNECTED',
-      accountReference: 'sari_glow_official_tt',
-      shopReference: 'ID_TIKTOK_SHOP_88921',
+      connectionStatus: isTtConfigured ? 'CONNECTED' : (isTest ? 'CONNECTED' : 'NOT_CONFIGURED'),
+      accountReference: isTtConfigured ? 'sari_glow_official_tt' : (isTest ? 'sari_glow_official_tt' : null),
+      shopReference: isTtConfigured ? 'ID_TIKTOK_SHOP_88921' : (isTest ? 'ID_TIKTOK_SHOP_88921' : null),
       region: 'ID',
       environment: env,
-      connectedAt: now,
-      lastHealthCheck: now,
+      connectedAt: (isTtConfigured || isTest) ? new Date().toISOString() : null,
+      lastHealthCheck: null,
       lastError: null,
-      isSimulated: true
+      isSimulated: !isTtConfigured,
+      missingConfig: platformConfigService.getMissingFields('TIKTOK')
     });
 
     this.connections.set('SHOPEE', {
       platform: 'SHOPEE',
-      connectionStatus: 'CONNECTED',
-      accountReference: 'sari_glow_shopee_mall',
-      shopReference: 'SHOPEE_SHOP_29104',
+      connectionStatus: isSpConfigured ? 'CONNECTED' : (isTest ? 'CONNECTED' : 'NOT_CONFIGURED'),
+      accountReference: isSpConfigured ? 'sari_glow_shopee_mall' : (isTest ? 'sari_glow_shopee_mall' : null),
+      shopReference: isSpConfigured ? 'SHOPEE_SHOP_29104' : (isTest ? 'SHOPEE_SHOP_29104' : null),
       region: 'ID',
       environment: env,
-      connectedAt: now,
-      lastHealthCheck: now,
+      connectedAt: (isSpConfigured || isTest) ? new Date().toISOString() : null,
+      lastHealthCheck: null,
       lastError: null,
-      isSimulated: true
+      isSimulated: !isSpConfigured,
+      missingConfig: platformConfigService.getMissingFields('SHOPEE')
     });
   }
 
@@ -75,13 +80,12 @@ export class PlatformConnectionService {
         connectedAt: null,
         lastHealthCheck: null,
         lastError: null,
-        isSimulated: false,
+        isSimulated: true,
         missingConfig: platformConfigService.getMissingFields(platform)
       };
       this.connections.set(platform, conn);
     }
 
-    // Refresh dynamic missing config
     conn.missingConfig = platformConfigService.getMissingFields(platform);
     return { ...conn };
   }
@@ -97,7 +101,7 @@ export class PlatformConnectionService {
     const missing = platformConfigService.getMissingFields(platform);
     const now = new Date().toISOString();
 
-    db.logAudit('CONNECT_STARTED', 'OPERATOR', `Initiating connection to ${platform} (Demo: ${isDemo})`);
+    db.logAudit('PLATFORM_AUTH_STARTED', 'OPERATOR', `Initiating connection to ${platform} (Demo: ${isDemo})`);
 
     // If real configuration is missing and not demo mode
     if (missing.length > 0 && !isDemo) {
@@ -115,7 +119,7 @@ export class PlatformConnectionService {
         missingConfig: missing
       };
       this.connections.set(platform, conn);
-      db.logAudit('CONNECT_FAILED', 'SYSTEM', `Connection failed for ${platform}: Missing env config`);
+      db.logAudit('PLATFORM_AUTH_FAILED', 'SYSTEM', `Connection failed for ${platform}: Missing env config`);
       return conn;
     }
 
@@ -145,7 +149,7 @@ export class PlatformConnectionService {
         isSimulated: isDemo
       };
       this.connections.set(platform, conn);
-      db.logAudit('CONNECT_SUCCESS', 'SYSTEM', `Platform ${platform} connected successfully [${isDemo ? 'DEMO' : 'REAL'}]`);
+      db.logAudit('PLATFORM_AUTH_SUCCEEDED', 'SYSTEM', `Platform ${platform} connected successfully [${isDemo ? 'DEMO' : 'REAL'}]`);
       return conn;
     } else {
       const conn: SafePlatformConnection = {
@@ -161,7 +165,7 @@ export class PlatformConnectionService {
         isSimulated: isDemo
       };
       this.connections.set(platform, conn);
-      db.logAudit('CONNECT_FAILED', 'SYSTEM', `Platform ${platform} verification failed: ${verification.error}`);
+      db.logAudit('PLATFORM_AUTH_FAILED', 'SYSTEM', `Platform ${platform} verification failed: ${verification.error}`);
       return conn;
     }
   }
@@ -173,9 +177,9 @@ export class PlatformConnectionService {
     const now = new Date().toISOString();
 
     if (platform === 'TIKTOK') {
-      tiktokTokenService.invalidateToken('Platform disconnected by operator');
+      await tikTokShopAuthProvider.revokeConnection();
     } else if (platform === 'SHOPEE') {
-      await platformAuthProvider.revokeCredentials('SHOPEE');
+      await shopeeAuthProvider.revokeConnection();
     }
 
     const conn: SafePlatformConnection = {
@@ -203,16 +207,21 @@ export class PlatformConnectionService {
   }
 
   /**
-   * Refreshes credentials and connection status.
+   * Refreshes credentials and connection status using concurrent lock.
    */
   public async refresh(platform: PlatformType): Promise<SafePlatformConnection> {
     const now = new Date().toISOString();
     let success = false;
+    let error: string | undefined;
 
     if (platform === 'TIKTOK') {
-      success = await tiktokTokenService.refreshAccessToken();
+      const result = await tikTokShopAuthProvider.refreshAccessToken();
+      success = result.success;
+      error = result.error;
     } else if (platform === 'SHOPEE') {
-      success = await platformAuthProvider.refreshCredentials('SHOPEE');
+      const result = await shopeeAuthProvider.refreshAccessToken();
+      success = result.success;
+      error = result.error;
     }
 
     const current = this.getStatus(platform);
@@ -220,12 +229,12 @@ export class PlatformConnectionService {
       current.connectionStatus = 'CONNECTED';
       current.lastHealthCheck = now;
       current.lastError = null;
-      db.logAudit('TOKEN_REFRESHED', 'SYSTEM', `Refreshed connection for ${platform}`);
+      db.logAudit('PLATFORM_TOKEN_REFRESHED', 'SYSTEM', `Refreshed connection for ${platform}`);
     } else {
-      current.connectionStatus = 'ERROR';
+      current.connectionStatus = 'REQUIRES_REAUTH';
       current.lastHealthCheck = now;
-      current.lastError = 'Token refresh failed or token revoked';
-      db.logAudit('PLATFORM_HEALTH_CHANGED', 'SYSTEM', `${platform} switched to ERROR due to refresh failure`);
+      current.lastError = error || 'Token refresh failed or token revoked';
+      db.logAudit('PLATFORM_TOKEN_REFRESH_FAILED', 'SYSTEM', `${platform} switched to REQUIRES_REAUTH: ${current.lastError}`);
     }
 
     this.connections.set(platform, current);
@@ -273,12 +282,12 @@ export class PlatformConnectionService {
    */
   public setDegradedMode(platform: PlatformType, errorReason: string): void {
     const current = this.getStatus(platform);
-    current.connectionStatus = 'ERROR';
+    current.connectionStatus = 'DEGRADED';
     current.lastError = errorReason;
     this.connections.set(platform, current);
 
     db.logAudit(
-      'PLATFORM_HEALTH_CHANGED',
+      'PLATFORM_CAPABILITY_CHANGED',
       'SYSTEM',
       `Platform ${platform} switched to SAFE MODE / DEGRADED: ${errorReason}`
     );

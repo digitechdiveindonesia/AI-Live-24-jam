@@ -29,6 +29,60 @@ export class ScheduleService {
     return ScheduleService.instance;
   }
 
+  public validateTimezone(timezone: string): { valid: boolean; error?: string } {
+    if (!timezone) return { valid: false, error: 'Timezone must be specified' };
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: timezone });
+      return { valid: true };
+    } catch {
+      return { valid: false, error: `Invalid IANA timezone identifier: "${timezone}"` };
+    }
+  }
+
+  public validateTimeRanges(startTime: string, endTime: string): { valid: boolean; error?: string } {
+    if (!startTime || !TIME_REGEX.test(startTime)) {
+      return { valid: false, error: 'Start time must be formatted as HH:mm (24-hour, e.g. "10:00")' };
+    }
+    if (!endTime || !TIME_REGEX.test(endTime)) {
+      return { valid: false, error: 'End time must be formatted as HH:mm (24-hour, e.g. "20:00")' };
+    }
+    if (startTime === endTime) {
+      return { valid: false, error: 'Start time and end time cannot be identical' };
+    }
+    return { valid: true };
+  }
+
+  public preventOverlappingSchedules(
+    schedule: Partial<LiveSchedule>,
+    existingScheduleId?: string
+  ): { valid: boolean; overlappingSchedule?: LiveSchedule; error?: string } {
+    const startTime = schedule.startTime || schedule.start_time;
+    const endTime = schedule.endTime || schedule.end_time;
+    const days = (schedule.daysOfWeek || schedule.days_of_week || []).map(d => d.toUpperCase());
+
+    if (!schedule.enabled || !startTime || !endTime || days.length === 0) {
+      return { valid: true };
+    }
+
+    const existing = db.getSchedules().filter(s => s.enabled && s.id !== existingScheduleId);
+    for (const ex of existing) {
+      const exDays = (ex.daysOfWeek || ex.days_of_week || []).map(d => d.toUpperCase());
+      const sharedDays = days.filter(d => exDays.includes(d));
+      if (sharedDays.length > 0) {
+        const exStart = ex.startTime || ex.start_time || '10:00';
+        const exEnd = ex.endTime || ex.end_time || '20:00';
+        if (this.checkTimesOverlap(startTime, endTime, exStart, exEnd)) {
+          return {
+            valid: false,
+            overlappingSchedule: ex,
+            error: `Schedule overlaps with active schedule "${ex.name}" on ${sharedDays.join(', ')}`
+          };
+        }
+      }
+    }
+    return { valid: true };
+  }
+
   /**
    * Validates schedule integrity, timezone validity, time format, and logical consistency.
    */
@@ -39,51 +93,42 @@ export class ScheduleService {
       errors.push('Schedule name cannot be empty');
     }
 
-    // Timezone validation
-    if (!schedule.timezone) {
-      errors.push('Timezone must be specified');
-    } else {
-      try {
-        Intl.DateTimeFormat(undefined, { timeZone: schedule.timezone });
-      } catch {
-        errors.push(`Invalid IANA timezone identifier: "${schedule.timezone}"`);
-      }
+    // Timezone validation (Default: Asia/Jakarta)
+    const tz = schedule.timezone || 'Asia/Jakarta';
+    const tzRes = this.validateTimezone(tz);
+    if (!tzRes.valid && tzRes.error) {
+      errors.push(tzRes.error);
     }
 
     // Days of week validation
-    if (!schedule.daysOfWeek || schedule.daysOfWeek.length === 0) {
+    const days = schedule.daysOfWeek || schedule.days_of_week;
+    if (!days || days.length === 0) {
       errors.push('At least one day of the week must be selected');
     } else {
-      const invalidDays = schedule.daysOfWeek.filter(d => !VALID_DAYS.includes(d.toUpperCase()));
+      const invalidDays = days.filter(d => !VALID_DAYS.includes(d.toUpperCase()));
       if (invalidDays.length > 0) {
         errors.push(`Invalid day(s) of week: ${invalidDays.join(', ')}. Must be one of: ${VALID_DAYS.join(', ')}`);
       }
     }
 
     // Time formats
-    if (!schedule.startTime || !TIME_REGEX.test(schedule.startTime)) {
-      errors.push('Start time must be formatted as HH:mm (24-hour, e.g. "10:00")');
-    }
-
-    if (!schedule.endTime || !TIME_REGEX.test(schedule.endTime)) {
-      errors.push('End time must be formatted as HH:mm (24-hour, e.g. "20:00")');
-    }
-
-    if (schedule.startTime && schedule.endTime && schedule.startTime === schedule.endTime) {
-      errors.push('Start time and end time cannot be identical');
+    const startTime = schedule.startTime || schedule.start_time;
+    const endTime = schedule.endTime || schedule.end_time;
+    if (startTime && endTime) {
+      const timeRes = this.validateTimeRanges(startTime, endTime);
+      if (!timeRes.valid && timeRes.error) {
+        errors.push(timeRes.error);
+      }
+    } else {
+      if (!startTime) errors.push('Start time must be formatted as HH:mm (24-hour, e.g. "10:00")');
+      if (!endTime) errors.push('End time must be formatted as HH:mm (24-hour, e.g. "20:00")');
     }
 
     // Overlapping schedule validation for enabled schedules
-    if (schedule.enabled && schedule.startTime && schedule.endTime && schedule.daysOfWeek) {
-      const existing = db.getSchedules().filter(s => s.enabled && s.id !== existingScheduleId);
-      for (const ex of existing) {
-        const sharedDays = schedule.daysOfWeek.filter(d => ex.daysOfWeek.includes(d));
-        if (sharedDays.length > 0) {
-          if (this.checkTimesOverlap(schedule.startTime, schedule.endTime, ex.startTime, ex.endTime)) {
-            errors.push(`Schedule overlaps with active schedule "${ex.name}" on ${sharedDays.join(', ')}`);
-            break;
-          }
-        }
+    if (errors.length === 0 && schedule.enabled) {
+      const overlapRes = this.preventOverlappingSchedules(schedule, existingScheduleId);
+      if (!overlapRes.valid && overlapRes.error) {
+        errors.push(overlapRes.error);
       }
     }
 
@@ -297,6 +342,39 @@ export class ScheduleService {
       isCurrentlyInWindow: isCurrentlyIn,
       timeUntilStartMs: isCurrentlyIn ? 0 : timeUntilStartMs,
       timeUntilEndMs: isCurrentlyIn ? timeUntilEndMs : null
+    };
+  }
+
+  public calculateNextStart(schedule: LiveSchedule, fromDate: Date = new Date()): string | null {
+    return this.getNextRun(schedule, fromDate).nextStartTime;
+  }
+
+  public calculateNextStop(schedule: LiveSchedule, fromDate: Date = new Date()): string | null {
+    return this.getNextRun(schedule, fromDate).nextEndTime;
+  }
+
+  /**
+   * Evaluates all enabled schedules to determine if the runtime should currently be active.
+   */
+  public determineWhetherRuntimeShouldBeActive(date: Date = new Date()): {
+    shouldBeActive: boolean;
+    activeSchedule?: LiveSchedule;
+    reason: string;
+  } {
+    const schedules = db.getSchedules().filter(s => s.enabled);
+    for (const s of schedules) {
+      if (this.isCurrentlyInWindow(s, date)) {
+        return {
+          shouldBeActive: true,
+          activeSchedule: s,
+          reason: `Within scheduled live window for "${s.name}" (${s.startTime} - ${s.endTime} ${s.timezone})`
+        };
+      }
+    }
+
+    return {
+      shouldBeActive: false,
+      reason: 'No active schedule window at the current time (Scale-to-Zero)'
     };
   }
 }

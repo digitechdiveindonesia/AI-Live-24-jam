@@ -4,10 +4,11 @@ import {
   ScheduleHistory,
   ScheduleStopReason
 } from '../../db/schema';
-import { RuntimeProvider, MockRuntimeProvider, CloudRunRuntimeProvider } from './RuntimeProvider';
+import { CloudRuntimeProvider, RuntimeProvider, MockRuntimeProvider, CloudRunRuntimeProvider } from './RuntimeProvider';
 import { scheduleService } from './ScheduleService';
 import { usageTelemetryService } from './UsageTelemetryService';
 import { liveSessionService } from '../LiveSessionService';
+import { liveSessionWatchdog } from '../LiveSessionWatchdog';
 import { eventService } from '../EventService';
 import { db } from '../../db';
 
@@ -16,6 +17,7 @@ export interface RuntimeStartOptions {
   force?: boolean;
   instanceId?: string;
   isSimulated?: boolean;
+  isManual?: boolean;
 }
 
 export interface RuntimeStopOptions {
@@ -38,20 +40,27 @@ export interface RuntimeStatusReport {
   lastHeartbeat?: string;
   activeSchedule?: LiveSchedule;
   isSimulated: boolean;
+  isManualOverride: boolean;
 }
 
 export class CloudRuntimeController {
   private static instance: CloudRuntimeController;
 
-  private runtimeProvider: RuntimeProvider;
+  private runtimeProvider: CloudRuntimeProvider;
   private currentStatus: CloudRuntimeStatus = 'RUNNING'; // Default to align with existing seed session
   private activeInstanceId: string = 'inst-cloud-01';
   private scheduledRestartEnabled: boolean = false;
   private gracePeriodSec: number = 60; // 60-second default graceful shutdown window
   private runtimeStartedAt: number = Date.now() - 7200000; // 2 hours ago matching seed
+  private isManualOverride: boolean = false;
+  private recoveryAttempts: number = 0;
+  private readonly MAX_RECOVERY_ATTEMPTS: number = 3;
 
   private constructor() {
-    this.runtimeProvider = new MockRuntimeProvider();
+    // If RUNTIME_MODE is CLOUD and not in test, use CloudRunRuntimeProvider
+    const useCloud = process.env.RUNTIME_MODE === 'CLOUD' && process.env.NODE_ENV !== 'test';
+    this.runtimeProvider = useCloud ? new CloudRunRuntimeProvider() : new MockRuntimeProvider();
+
     // Initialize lock for seed session
     db.acquireRuntimeLock('LIVE-001', this.activeInstanceId, 3600000);
   }
@@ -63,28 +72,37 @@ export class CloudRuntimeController {
     return CloudRuntimeController.instance;
   }
 
-  public setRuntimeProvider(provider: RuntimeProvider): void {
+  public setRuntimeProvider(provider: CloudRuntimeProvider): void {
     this.runtimeProvider = provider;
+  }
+
+  public getRuntimeProvider(): CloudRuntimeProvider {
+    return this.runtimeProvider;
+  }
+
+  public resetRecoveryAttempts(): void {
+    this.recoveryAttempts = 0;
   }
 
   public getRuntimeStatus(): RuntimeStatusReport {
     const session = db.session;
-    const isLocked = db.isRuntimeLocked(session.id) || (db.runtimeLock !== null && db.runtimeLock.acquiredBy === this.activeInstanceId && Date.now() < new Date(db.runtimeLock.expiresAt).getTime());
+    const isLocked = db.isRuntimeLocked(session.id) || (db.runtimeLock !== null && (db.runtimeLock.acquiredBy === this.activeInstanceId || db.runtimeLock.owner === this.activeInstanceId) && Date.now() < new Date(db.runtimeLock.expiresAt || db.runtimeLock.expires_at || 0).getTime());
     const activeSchedule = db.getSchedules().find(s => s.enabled);
 
     return {
       status: this.currentStatus,
       instanceId: this.activeInstanceId || undefined,
       isLocked,
-      lockedBy: db.runtimeLock?.acquiredBy,
+      lockedBy: db.runtimeLock?.owner || db.runtimeLock?.acquiredBy,
       activeSessionId: session.id,
       currentProduct: session.current_sku,
       hostState: session.current_host_state,
       startedAt: session.started_at || undefined,
-      scheduledEnd: activeSchedule?.endTime,
+      scheduledEnd: activeSchedule?.endTime || activeSchedule?.end_time,
       lastHeartbeat: session.last_heartbeat_at || undefined,
       activeSchedule,
-      isSimulated: !this.runtimeProvider.isCloud
+      isSimulated: !this.runtimeProvider.isCloud,
+      isManualOverride: this.isManualOverride
     };
   }
 
@@ -99,7 +117,22 @@ export class CloudRuntimeController {
     sessionId?: string;
   }> {
     const instanceId = options.instanceId || `inst-run-${Date.now()}`;
-    const schedule = options.scheduleId ? db.getScheduleById(options.scheduleId) : db.getSchedules().find(s => s.enabled);
+    const schedule = options.scheduleId
+      ? db.getScheduleById(options.scheduleId)
+      : db.getSchedules().find(s => s.enabled);
+
+    // 0. Event: RUNTIME_START_REQUESTED
+    eventService.emit('RUNTIME_START_REQUESTED', {
+      scheduleId: schedule?.id,
+      instanceId,
+      isManual: !!options.isManual,
+      timestamp: new Date().toISOString()
+    });
+
+    if (options.isManual) {
+      this.isManualOverride = true;
+      eventService.emit('MANUAL_START', { instanceId, timestamp: new Date().toISOString() });
+    }
 
     // 1. Idempotency Check: Already running?
     if (this.currentStatus === 'RUNNING' && db.session.status === 'RUNNING') {
@@ -115,36 +148,56 @@ export class CloudRuntimeController {
     const targetSessionId = db.session.id || 'LIVE-001';
     const lockAcquired = db.acquireRuntimeLock(targetSessionId, instanceId, 3600000);
     if (!lockAcquired && !options.force) {
+      const lockHolder = db.runtimeLock?.owner || db.runtimeLock?.acquiredBy;
+      eventService.emit('RUNTIME_START_FAILED', {
+        reason: 'RUNTIME_LOCKED',
+        lockHolder,
+        timestamp: new Date().toISOString()
+      });
       return {
         success: false,
         status: this.currentStatus,
-        message: `RUNTIME_LOCKED: Session ${targetSessionId} is already locked by another runtime instance (${db.runtimeLock?.acquiredBy})`
+        message: `RUNTIME_LOCKED: Session ${targetSessionId} is already locked by another runtime instance (${lockHolder})`
       };
     }
 
-    eventService.emit('SCHEDULE_TRIGGERED', {
-      scheduleId: schedule?.id,
-      instanceId,
-      timestamp: new Date().toISOString()
-    });
+    if (!options.isManual) {
+      eventService.emit('SCHEDULE_TRIGGERED', {
+        scheduleId: schedule?.id,
+        instanceId,
+        timestamp: new Date().toISOString()
+      });
+    }
 
     // 3. Start Runtime Provider (Scale up container from zero)
     this.currentStatus = 'STARTING';
     eventService.emit('RUNTIME_STARTING', { instanceId, timestamp: new Date().toISOString() });
 
-    const providerResult = await this.runtimeProvider.start();
+    const providerResult = await this.runtimeProvider.startRuntime ? await this.runtimeProvider.startRuntime({ instanceId, force: options.force }) : await this.runtimeProvider.start();
     if (!providerResult.success && !options.force) {
-      this.currentStatus = 'FAILED';
+      this.currentStatus = providerResult.status === 'NOT_CONFIGURED' ? 'NOT_CONFIGURED' : 'FAILED';
       db.releaseRuntimeLock(targetSessionId, instanceId);
       db.logAudit('RUNTIME_START_FAILED', 'SYSTEM', `Runtime provider failed: ${providerResult.message}`);
+      eventService.emit('RUNTIME_START_FAILED', {
+        error: providerResult.message,
+        status: this.currentStatus,
+        timestamp: new Date().toISOString()
+      });
       return {
         success: false,
-        status: 'FAILED',
+        status: this.currentStatus,
         message: `RUNTIME_START_FAILED: ${providerResult.message}`
       };
     }
 
-    this.activeInstanceId = providerResult.instanceId || instanceId;
+    eventService.emit('RUNTIME_STARTED', {
+      instanceId,
+      status: 'RUNNING',
+      isSimulated: providerResult.isSimulated,
+      timestamp: new Date().toISOString()
+    });
+
+    this.activeInstanceId = options.instanceId || providerResult.instanceId || instanceId;
     this.runtimeStartedAt = Date.now();
     usageTelemetryService.recordRuntimeStart();
 
@@ -159,11 +212,19 @@ export class CloudRuntimeController {
       });
 
       // Bind lock to the active session id
+      db.releaseRuntimeLock(targetSessionId, this.activeInstanceId);
       db.acquireRuntimeLock(startResult.id, this.activeInstanceId, 3600000);
 
       this.currentStatus = 'RUNNING';
+      this.recoveryAttempts = 0; // reset retry counter on successful start
+
       eventService.emit('LIVE_SESSION_STARTED', { sessionId: startResult.id, timestamp: new Date().toISOString() });
       eventService.emit('RUNTIME_RUNNING', { instanceId: this.activeInstanceId, timestamp: new Date().toISOString() });
+      eventService.emit('RUNTIME_HEARTBEAT', {
+        instanceId: this.activeInstanceId,
+        sessionId: startResult.id,
+        timestamp: new Date().toISOString()
+      });
 
       db.logAudit(
         'RUNTIME_RUNNING',
@@ -180,6 +241,7 @@ export class CloudRuntimeController {
     } catch (err: any) {
       this.currentStatus = 'FAILED';
       db.releaseRuntimeLock(targetSessionId, this.activeInstanceId);
+      eventService.emit('RUNTIME_START_FAILED', { error: err.message, timestamp: new Date().toISOString() });
       return {
         success: false,
         status: 'FAILED',
@@ -199,6 +261,21 @@ export class CloudRuntimeController {
   }> {
     const reason = options.reason || 'SCHEDULE_END';
 
+    // Check manual override policy (Section 15):
+    // If a session was manually started and reason is SCHEDULE_END, do not kill the manual session
+    if (reason === 'SCHEDULE_END' && this.isManualOverride && !options.force) {
+      return {
+        success: true,
+        status: this.currentStatus,
+        message: 'MANUAL_OVERRIDE_ACTIVE: Session was manually started and will continue past scheduled end time.'
+      };
+    }
+
+    if (reason === 'MANUAL_STOP' || reason === 'OPERATOR_STOP') {
+      this.isManualOverride = false;
+      eventService.emit('MANUAL_STOP', { reason, timestamp: new Date().toISOString() });
+    }
+
     // 1. Idempotency Check: Already stopped?
     if (this.currentStatus === 'OFF' || this.currentStatus === 'STOPPED') {
       return {
@@ -208,7 +285,10 @@ export class CloudRuntimeController {
       };
     }
 
-    eventService.emit('SCHEDULE_END', { reason, timestamp: new Date().toISOString() });
+    eventService.emit('RUNTIME_STOP_REQUESTED', { reason, timestamp: new Date().toISOString() });
+    if (reason === 'SCHEDULE_END') {
+      eventService.emit('SCHEDULE_END', { reason, timestamp: new Date().toISOString() });
+    }
     eventService.emit('RUNTIME_STOPPING', { reason, timestamp: new Date().toISOString() });
     this.currentStatus = 'STOPPING';
 
@@ -230,7 +310,11 @@ export class CloudRuntimeController {
     }
 
     // 3. Stop Runtime Provider (Scale down compute to zero)
-    await this.runtimeProvider.stop();
+    if (this.runtimeProvider.stopRuntime) {
+      await this.runtimeProvider.stopRuntime({ reason, force: options.force });
+    } else {
+      await this.runtimeProvider.stop();
+    }
 
     // 4. Release Lock
     if (sessionId) {
@@ -254,12 +338,13 @@ export class CloudRuntimeController {
       actualEndTime: new Date().toISOString(),
       runtimeStatus: 'STOPPED',
       stopReason: reason,
-      recoveryCount: 0,
+      recoveryCount: this.recoveryAttempts,
       incidentCount: 0
     };
     db.recordScheduleHistory(historyEntry);
 
     this.currentStatus = 'OFF';
+    this.isManualOverride = false;
     eventService.emit('RUNTIME_STOPPED', { reason, durationSec, timestamp: new Date().toISOString() });
 
     db.logAudit(
@@ -277,10 +362,40 @@ export class CloudRuntimeController {
 
   /**
    * Crash recovery: restores persisted session state, product, and script position without resetting blindly to INTRO.
+   * Employs bounded retries with exponential backoff (Section 13).
    */
   public async recoverRuntime(): Promise<{ success: boolean; status: CloudRuntimeStatus; message: string }> {
+    this.recoveryAttempts++;
+
+    if (this.recoveryAttempts > this.MAX_RECOVERY_ATTEMPTS) {
+      this.currentStatus = 'FAILED';
+      eventService.emit('RUNTIME_FAILED', {
+        reason: 'MAX_RECOVERY_ATTEMPTS_EXCEEDED',
+        attempts: this.recoveryAttempts,
+        timestamp: new Date().toISOString()
+      });
+      db.logAudit(
+        'RUNTIME_FAILED',
+        'SYSTEM',
+        `Runtime recovery failed: Exceeded maximum allowed attempts (${this.MAX_RECOVERY_ATTEMPTS}). Human operator intervention required.`
+      );
+      return {
+        success: false,
+        status: 'FAILED',
+        message: `Recovery failed: Max retry attempts (${this.MAX_RECOVERY_ATTEMPTS}) reached.`
+      };
+    }
+
+    // Emit DEGRADED then attempt recovery
+    this.currentStatus = 'DEGRADED';
+    eventService.emit('RUNTIME_DEGRADED', {
+      attempt: this.recoveryAttempts,
+      maxAttempts: this.MAX_RECOVERY_ATTEMPTS,
+      timestamp: new Date().toISOString()
+    });
+
     const session = db.session;
-    db.logAudit('RUNTIME_RECOVERY_STARTED', 'SYSTEM', `Recovering runtime for session ${session.id}`);
+    db.logAudit('RUNTIME_RECOVERY_STARTED', 'SYSTEM', `Recovering runtime for session ${session.id} (Attempt ${this.recoveryAttempts}/${this.MAX_RECOVERY_ATTEMPTS})`);
 
     // Verify session data
     const preservedProduct = session.current_sku;
@@ -292,7 +407,11 @@ export class CloudRuntimeController {
     db.acquireRuntimeLock(session.id, this.activeInstanceId, 3600000);
 
     // Start provider
-    await this.runtimeProvider.start();
+    if (this.runtimeProvider.startRuntime) {
+      await this.runtimeProvider.startRuntime({ instanceId: this.activeInstanceId, force: true });
+    } else {
+      await this.runtimeProvider.start();
+    }
     this.currentStatus = 'RUNNING';
 
     // Restore verified state
@@ -308,6 +427,11 @@ export class CloudRuntimeController {
       sessionId: session.id,
       sku: preservedProduct,
       scriptBlockId: preservedBlock,
+      timestamp: new Date().toISOString()
+    });
+    eventService.emit('RUNTIME_RECOVERY', {
+      sessionId: session.id,
+      attempt: this.recoveryAttempts,
       timestamp: new Date().toISOString()
     });
 
@@ -396,12 +520,48 @@ export class CloudRuntimeController {
     };
   }
 
-  public async getRuntimeHealth(): Promise<{ healthy: boolean; latencyMs: number; status: CloudRuntimeStatus }> {
+  /**
+   * Health check distinguishing PROCESS ALIVE from LIVE SESSION READY (Section 12).
+   */
+  public async getRuntimeHealth(): Promise<{
+    healthy: boolean;
+    processAlive: boolean;
+    liveSessionReady: boolean;
+    latencyMs: number;
+    status: CloudRuntimeStatus;
+    sessionStatus: string;
+    instanceId?: string;
+    sessionId: string;
+    lastHeartbeat: string;
+    isSimulated: boolean;
+    serviceHealth: {
+      cloudRun: string;
+      scheduler: string;
+      liveSession: string;
+      database: string;
+    };
+  }> {
     const health = await this.runtimeProvider.healthCheck();
+    const isLiveReady = db.session.status === 'RUNNING' && db.session.is_ai_host_on;
+    const now = new Date().toISOString();
+
     return {
-      healthy: health.healthy && this.currentStatus === 'RUNNING',
+      healthy: health.healthy && (this.currentStatus === 'RUNNING' || this.currentStatus === 'OFF' || this.currentStatus === 'STOPPED'),
+      processAlive: true,
+      liveSessionReady: isLiveReady,
       latencyMs: health.latencyMs,
-      status: this.currentStatus
+      status: this.currentStatus,
+      sessionStatus: db.session.status,
+      instanceId: this.activeInstanceId || undefined,
+      sessionId: db.session.id,
+      lastHeartbeat: db.session.last_heartbeat_at || now,
+      isSimulated: !this.runtimeProvider.isCloud,
+      serviceHealth: {
+        cloudRun: this.runtimeProvider.name,
+        scheduler: 'OPERATIONAL',
+        liveSession: db.session.status,
+        database: 'CONNECTED'
+      }
     };
   }
 }

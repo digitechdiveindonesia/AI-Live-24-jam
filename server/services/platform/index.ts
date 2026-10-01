@@ -12,4 +12,12 @@ export * from './TikTokPlatformAdapter';
 export * from './ShopeePlatformAdapter';
 export * from './PlatformManager';
 export * from './PlatformProductSyncService';
+export * from './ProductSyncService';
+export * from './CommerceSyncWorker';
 export * from './PlatformWebhookService';
+export * from './TokenEncryptionService';
+export * from './OAuthStateService';
+export * from './TikTokShopAuthProvider';
+export * from './ShopeeAuthProvider';
+
+

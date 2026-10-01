@@ -8,10 +8,12 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "server": "tsx server/index.ts",
-    "test": "NODE_ENV=test npx tsx --test test/services.test.ts test/voice_avatar.test.ts test/live_session_watchdog.test.ts test/platform_adapters.test.ts test/platform_connection_verification.test.ts test/scheduled_cloud_runtime.test.ts"
+    "db:seed": "tsx server/db/seedToSupabase.ts",
+    "test": "NODE_ENV=test npx tsx --test test/services.test.ts test/voice_avatar.test.ts test/live_session_watchdog.test.ts test/platform_adapters.test.ts test/platform_connection_verification.test.ts test/scheduled_cloud_runtime.test.ts test/supabase_data_foundation.test.ts test/commerce_sync_conflicts.test.ts test/platform_real_auth_lifecycle.test.ts test/cloud_runtime_scheduled_auto.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",
+    "@supabase/supabase-js": "^2.117.2",
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

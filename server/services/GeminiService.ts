@@ -219,25 +219,56 @@ Strict Output Requirements:
     }
 
     if (lower.includes('sensitif') || lower.includes('bumil') || lower.includes('pakai') || lower.includes('jerawat')) {
-      return {
-        response: `Aman banget kak! Formula ${verifiedFacts.name} sudah BPOM dan teruji dermatologis untuk kulit sensitif. Checkout sekarang selagi promo ya!`,
-        intent: 'USAGE_QUESTION',
-        productId: verifiedFacts.sku,
-        tone: 'friendly',
-        requiresHumanReview: false,
-        shouldContinueSelling: true
-      };
+      const hasClinicalEvidence = verifiedFacts.usage && (
+        verifiedFacts.usage.toLowerCase().includes('dermatologis') ||
+        verifiedFacts.usage.toLowerCase().includes('bpom') ||
+        verifiedFacts.usage.toLowerCase().includes('sensitif') ||
+        verifiedFacts.usage.toLowerCase().includes('niacinamide') ||
+        verifiedFacts.usage.toLowerCase().includes('kulit')
+      );
+
+      if (hasClinicalEvidence) {
+        return {
+          response: `Untuk ${verifiedFacts.name}, ${verifiedFacts.usage}. Informasi terverifikasi resmi ya kak. Yuk amankan selagi promo!`,
+          intent: 'USAGE_QUESTION',
+          productId: verifiedFacts.sku,
+          tone: 'friendly',
+          requiresHumanReview: false,
+          shouldContinueSelling: true
+        };
+      } else {
+        return {
+          response: `Mohon maaf kak, untuk informasi kecocokan spesifik ${verifiedFacts.name}, data klinis resmi belum tercantum di sistem kami. Disarankan konsultasi dokter ya kak.`,
+          intent: 'USAGE_QUESTION',
+          productId: verifiedFacts.sku,
+          tone: 'friendly',
+          requiresHumanReview: false,
+          shouldContinueSelling: false
+        };
+      }
     }
 
     if (lower.includes('cod') || lower.includes('kirim') || lower.includes('ongkir')) {
-      return {
-        response: `Bisa banget COD ke seluruh Indonesia kak! Pengiriman setiap hari dengan packing aman, langsung klik keranjang kuning ya!`,
-        intent: 'SHIPPING_QUESTION',
-        productId: verifiedFacts.sku,
-        tone: 'friendly',
-        requiresHumanReview: false,
-        shouldContinueSelling: true
-      };
+      const shippingInfo = verifiedFacts.shipping?.trim();
+      if (shippingInfo && shippingInfo.length > 0) {
+        return {
+          response: `${shippingInfo} untuk ${verifiedFacts.name}. Silakan cek ketersediaan kurir di keranjang kuning ya kak!`,
+          intent: 'SHIPPING_QUESTION',
+          productId: verifiedFacts.sku,
+          tone: 'friendly',
+          requiresHumanReview: false,
+          shouldContinueSelling: true
+        };
+      } else {
+        return {
+          response: `Informasi opsi pengiriman untuk ${verifiedFacts.name} dapat dicek langsung saat memilih kurir di keranjang kuning ya kak.`,
+          intent: 'SHIPPING_QUESTION',
+          productId: verifiedFacts.sku,
+          tone: 'friendly',
+          requiresHumanReview: false,
+          shouldContinueSelling: true
+        };
+      }
     }
 
     if (lower.includes('sampai') || lower.includes('rusak') || lower.includes('belum') || lower.includes('komplain')) {

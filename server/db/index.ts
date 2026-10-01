@@ -25,6 +25,12 @@ import {
   SpeechResumeContext,
   VoiceTelemetry,
   SyncConflict,
+  SyncConflictType,
+  SyncConflictStatus,
+  SyncResolutionType,
+  ExternalProductMapping,
+  SyncRun,
+  PlatformType,
   PlatformConnection,
   LiveSchedule,
   ScheduleHistory,
@@ -122,17 +128,70 @@ export class LiveCommerceDatabase {
   public syncConflicts: SyncConflict[] = [
     {
       id: 'conflict-init-01',
-      sku: 'SKU-001',
       platform: 'TIKTOK',
+      entity_type: 'INVENTORY',
+      entity_id: 'SKU-001',
+      external_id: 'tt-prod-001',
+      conflict_type: 'INVENTORY_CONFLICT',
+      local_value: { available_stock: 23, total_stock: 25, reserved_stock: 2 },
+      external_value: { stock: 25 },
+      status: 'RESOLVED',
+      resolution: 'LOCAL_AUTHORITATIVE',
+      resolved_by: 'OPERATOR',
+      resolved_at: new Date(Date.now() - 3500000).toISOString(),
+      fingerprint: 'TIKTOK:INVENTORY:SKU-001:INVENTORY_CONFLICT:23:25',
+      notes: 'Internal stock (23) authoritative over platform buffer.',
+      created_at: new Date(Date.now() - 3600000).toISOString(),
+      updated_at: new Date(Date.now() - 3500000).toISOString(),
+      sku: 'SKU-001',
       conflictType: 'INVENTORY_MISMATCH',
       internalValue: { availableStock: 23, totalStock: 25 },
       platformValue: { availableStock: 25, totalStock: 25 },
-      status: 'RESOLVED_INTERNAL',
-      detectedAt: new Date(Date.now() - 3600000).toISOString(),
-      resolvedAt: new Date(Date.now() - 3500000).toISOString(),
-      notes: 'Internal stock (23) authoritative over platform buffer. Overwrote platform stock.'
+      detectedAt: new Date(Date.now() - 3600000).toISOString()
     }
   ];
+  public externalMappings: ExternalProductMapping[] = [
+    {
+      id: 'map-tt-001',
+      product_id: 'prod-001',
+      variant_id: null,
+      platform: 'TIKTOK',
+      external_product_id: 'tt-prod-001',
+      external_variant_id: null,
+      external_sku: 'SKU-001',
+      last_synced_at: new Date(Date.now() - 3600000).toISOString(),
+      metadata: { platform: 'TIKTOK', mapped_by: 'SYSTEM' },
+      created_at: new Date(Date.now() - 7200000).toISOString(),
+      updated_at: new Date(Date.now() - 3600000).toISOString()
+    },
+    {
+      id: 'map-sp-001',
+      product_id: 'prod-001',
+      variant_id: null,
+      platform: 'SHOPEE',
+      external_product_id: 'sp-prod-001',
+      external_variant_id: null,
+      external_sku: 'SKU-001',
+      last_synced_at: new Date(Date.now() - 3600000).toISOString(),
+      metadata: { platform: 'SHOPEE', mapped_by: 'SYSTEM' },
+      created_at: new Date(Date.now() - 7200000).toISOString(),
+      updated_at: new Date(Date.now() - 3600000).toISOString()
+    },
+    {
+      id: 'map-tt-002',
+      product_id: 'prod-002',
+      variant_id: null,
+      platform: 'TIKTOK',
+      external_product_id: 'tt-prod-002',
+      external_variant_id: null,
+      external_sku: 'SKU-002',
+      last_synced_at: new Date(Date.now() - 3600000).toISOString(),
+      metadata: { platform: 'TIKTOK', mapped_by: 'SYSTEM' },
+      created_at: new Date(Date.now() - 7200000).toISOString(),
+      updated_at: new Date(Date.now() - 3600000).toISOString()
+    }
+  ];
+  public syncRuns: SyncRun[] = [];
   public schedules: LiveSchedule[] = [
     {
       id: 'sched-daily-01',
@@ -208,7 +267,22 @@ export class LiveCommerceDatabase {
       inv.available_stock = Math.max(0, newStock - inv.reserved_stock);
       inv.last_updated = new Date().toISOString();
       this.logAudit('UPDATE_STOCK', 'OPERATOR', `${sku} stock adjusted to ${newStock}`);
+    } else {
+      const newInv: Inventory = {
+        sku,
+        total_stock: newStock,
+        reserved_stock: 0,
+        available_stock: newStock,
+        low_stock_threshold: 10,
+        last_updated: new Date().toISOString()
+      };
+      this.inventory.push(newInv);
+      this.logAudit('UPDATE_STOCK', 'OPERATOR', `${sku} initialized with stock ${newStock}`);
     }
+  }
+
+  public getAuditLogs(): AuditLog[] {
+    return [...this.auditLogs];
   }
 
   public logAudit(action: string, operator: string, target: string, status: string = 'SUCCESS'): void {
@@ -367,14 +441,50 @@ export class LiveCommerceDatabase {
   }
 
   // Sync Conflict Management
-  public addSyncConflict(conflict: Omit<SyncConflict, 'id' | 'detectedAt'>): SyncConflict {
+  public addSyncConflict(conflict: Partial<SyncConflict>): SyncConflict {
+    const platform = conflict.platform || 'TIKTOK';
+    const entityType = conflict.entity_type || 'INVENTORY';
+    const entityId = conflict.entity_id || conflict.sku || 'UNKNOWN';
+    const externalId = conflict.external_id || 'UNKNOWN';
+    const conflictType = (conflict.conflict_type || conflict.conflictType || 'UNKNOWN_CONFLICT') as SyncConflictType;
+    const localVal = conflict.local_value || conflict.internalValue || {};
+    const extVal = conflict.external_value || conflict.platformValue || {};
+
+    const fingerprint = conflict.fingerprint || `${platform}:${entityType}:${entityId}:${conflictType}:${JSON.stringify(localVal)}:${JSON.stringify(extVal)}`;
+
+    // Idempotency: Check if an OPEN conflict with the same fingerprint already exists
+    const existing = this.syncConflicts.find(c => c.fingerprint === fingerprint && (c.status === 'OPEN' || c.status as any === 'OPEN'));
+    if (existing) {
+      return existing;
+    }
+
+    const now = new Date().toISOString();
     const newConflict: SyncConflict = {
-      ...conflict,
-      id: `conflict-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      detectedAt: new Date().toISOString()
+      id: conflict.id || `conflict-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      platform,
+      entity_type: entityType as any,
+      entity_id: entityId,
+      external_id: externalId,
+      conflict_type: conflictType,
+      local_value: localVal,
+      external_value: extVal,
+      status: conflict.status || 'OPEN',
+      resolution: conflict.resolution || null,
+      resolved_by: conflict.resolved_by || null,
+      resolved_at: conflict.resolved_at || null,
+      fingerprint,
+      notes: conflict.notes || null,
+      created_at: conflict.created_at || now,
+      updated_at: conflict.updated_at || now,
+      sku: entityId,
+      conflictType: String(conflictType),
+      internalValue: localVal,
+      platformValue: extVal,
+      detectedAt: now
     };
+
     this.syncConflicts.unshift(newConflict);
-    this.logAudit('SYNC_CONFLICT_DETECTED', 'SYSTEM', `Conflict on ${conflict.sku} (${conflict.platform}): ${conflict.conflictType}`);
+    this.logAudit('SYNC_CONFLICT_DETECTED', 'SYSTEM', `Conflict on ${entityId} (${platform}): ${conflictType}`);
     return newConflict;
   }
 
@@ -383,20 +493,113 @@ export class LiveCommerceDatabase {
     return this.syncConflicts.filter(c => c.status === status);
   }
 
+  public getSyncConflictById(id: string): SyncConflict | undefined {
+    return this.syncConflicts.find(c => c.id === id);
+  }
+
   public resolveSyncConflict(
     conflictId: string,
-    resolution: 'RESOLVED_INTERNAL' | 'RESOLVED_MANUAL',
+    resolution: SyncResolutionType | 'RESOLVED_INTERNAL' | 'RESOLVED_MANUAL',
+    resolvedBy: string = 'OPERATOR',
     notes?: string
   ): SyncConflict | undefined {
     const conflict = this.syncConflicts.find(c => c.id === conflictId);
     if (conflict) {
-      conflict.status = resolution;
-      conflict.resolvedAt = new Date().toISOString();
+      const now = new Date().toISOString();
+      let resType: SyncResolutionType = 'LOCAL_AUTHORITATIVE';
+      let status: SyncConflictStatus = 'RESOLVED';
+
+      if (resolution === 'EXTERNAL_OVERWRITE') {
+        resType = 'EXTERNAL_OVERWRITE';
+        status = 'RESOLVED';
+      } else if (resolution === 'MANUAL_VALUE') {
+        resType = 'MANUAL_VALUE';
+        status = 'RESOLVED';
+      } else if (resolution === 'RESOLVED_MANUAL') {
+        resType = 'MANUAL_VALUE';
+        status = 'RESOLVED_MANUAL';
+      } else if (resolution === 'RESOLVED_INTERNAL') {
+        resType = 'LOCAL_AUTHORITATIVE';
+        status = 'RESOLVED_INTERNAL';
+      } else if (resolution === 'LOCAL_AUTHORITATIVE') {
+        resType = 'LOCAL_AUTHORITATIVE';
+        status = 'RESOLVED';
+      }
+
+      conflict.status = status;
+      conflict.resolution = resType;
+      conflict.resolved_by = resolvedBy;
+      conflict.resolved_at = now;
+      conflict.updated_at = now;
       if (notes) conflict.notes = notes;
-      this.logAudit('SYNC_CONFLICT_RESOLVED', 'OPERATOR', `Conflict ${conflictId} resolved via ${resolution}`);
+      this.logAudit('SYNC_CONFLICT_RESOLVED', resolvedBy, `Conflict ${conflictId} resolved via ${resType}`);
     }
     return conflict;
   }
+
+  // External Product Mapping Methods
+  public getExternalMappings(filter?: { platform?: PlatformType; productId?: string; externalSku?: string }): ExternalProductMapping[] {
+    let result = [...this.externalMappings];
+    if (filter?.platform) result = result.filter(m => m.platform === filter.platform);
+    if (filter?.productId) result = result.filter(m => m.product_id === filter.productId);
+    if (filter?.externalSku) result = result.filter(m => m.external_sku === filter.externalSku);
+    return result;
+  }
+
+  public getExternalMappingBySku(platform: PlatformType, sku: string): ExternalProductMapping | undefined {
+    return this.externalMappings.find(m => m.platform === platform && (m.external_sku === sku || m.product_id === sku));
+  }
+
+  public saveExternalMapping(mapping: Omit<ExternalProductMapping, 'id' | 'created_at' | 'updated_at'> & { id?: string }): ExternalProductMapping {
+    const now = new Date().toISOString();
+    const existingIndex = this.externalMappings.findIndex(
+      m => m.platform === mapping.platform && (m.external_product_id === mapping.external_product_id || m.external_sku === mapping.external_sku)
+    );
+
+    if (existingIndex >= 0) {
+      const updated: ExternalProductMapping = {
+        ...this.externalMappings[existingIndex],
+        ...mapping,
+        updated_at: now
+      };
+      this.externalMappings[existingIndex] = updated;
+      return updated;
+    }
+
+    const newMapping: ExternalProductMapping = {
+      id: mapping.id || `map-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      product_id: mapping.product_id,
+      variant_id: mapping.variant_id || null,
+      platform: mapping.platform,
+      external_product_id: mapping.external_product_id,
+      external_variant_id: mapping.external_variant_id || null,
+      external_sku: mapping.external_sku,
+      last_synced_at: mapping.last_synced_at || now,
+      metadata: mapping.metadata || {},
+      created_at: now,
+      updated_at: now
+    };
+    this.externalMappings.push(newMapping);
+    return newMapping;
+  }
+
+  // Sync Run Records (Observability)
+  public recordSyncRun(run: Omit<SyncRun, 'id' | 'started_at'> & { id?: string }): SyncRun {
+    const newRun: SyncRun = {
+      id: run.id || `sync-run-${Date.now()}`,
+      started_at: new Date().toISOString(),
+      ...run
+    };
+    this.syncRuns.unshift(newRun);
+    if (this.syncRuns.length > 100) this.syncRuns.pop();
+    return newRun;
+  }
+
+  public getSyncRuns(platform?: PlatformType): SyncRun[] {
+    if (!platform) return [...this.syncRuns];
+    return this.syncRuns.filter(r => r.platform === platform);
+  }
+
 
   // Schedule Management Methods
   public getSchedules(): LiveSchedule[] {
@@ -444,28 +647,53 @@ export class LiveCommerceDatabase {
   public acquireRuntimeLock(sessionId: string, instanceId: string, ttlMs: number = 300000): boolean {
     const now = Date.now();
     if (this.runtimeLock) {
-      const lockExpiry = new Date(this.runtimeLock.expiresAt).getTime();
-      if (now < lockExpiry && this.runtimeLock.acquiredBy !== instanceId) {
+      const lockExpiry = new Date(this.runtimeLock.expiresAt || this.runtimeLock.expires_at || 0).getTime();
+      if (now < lockExpiry && (this.runtimeLock.acquiredBy !== instanceId && this.runtimeLock.owner !== instanceId)) {
         // Locked by another active instance
         return false;
       }
+      if (now >= lockExpiry && this.runtimeLock.status !== 'RELEASED') {
+        this.logAudit('EXPIRED_LOCK_RECOVERED', 'SYSTEM', `Recovered expired lock for session ${sessionId} previously owned by ${this.runtimeLock.owner || this.runtimeLock.acquiredBy}`);
+      }
     }
+
+    const acquiredAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + ttlMs).toISOString();
 
     this.runtimeLock = {
       lockId: `lock-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       sessionId,
       acquiredBy: instanceId,
-      acquiredAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + ttlMs).toISOString()
+      owner: instanceId,
+      acquiredAt,
+      acquired_at: acquiredAt,
+      expiresAt,
+      expires_at: expiresAt,
+      status: 'ACQUIRED'
     };
     this.logAudit('RUNTIME_LOCK_ACQUIRED', 'SYSTEM', `Lock for session ${sessionId} acquired by ${instanceId}`);
     return true;
   }
 
   public releaseRuntimeLock(sessionId: string, instanceId: string): boolean {
-    if (this.runtimeLock && (this.runtimeLock.sessionId === sessionId || this.runtimeLock.acquiredBy === instanceId)) {
+    if (this.runtimeLock && (this.runtimeLock.sessionId === sessionId || this.runtimeLock.acquiredBy === instanceId || this.runtimeLock.owner === instanceId)) {
+      this.runtimeLock.status = 'RELEASED';
+      const prevOwner = this.runtimeLock.owner || this.runtimeLock.acquiredBy;
       this.runtimeLock = null;
-      this.logAudit('RUNTIME_LOCK_RELEASED', 'SYSTEM', `Lock for session ${sessionId} released by ${instanceId}`);
+      this.logAudit('RUNTIME_LOCK_RELEASED', 'SYSTEM', `Lock for session ${sessionId} released by ${prevOwner}`);
+      return true;
+    }
+    return false;
+  }
+
+  public recoverExpiredLock(sessionId?: string): boolean {
+    if (!this.runtimeLock) return false;
+    const now = Date.now();
+    const lockExpiry = new Date(this.runtimeLock.expiresAt || this.runtimeLock.expires_at || 0).getTime();
+    if (now >= lockExpiry) {
+      const prev = this.runtimeLock;
+      this.runtimeLock = null;
+      this.logAudit('EXPIRED_LOCK_RECOVERED', 'SYSTEM', `Explicitly recovered expired lock for session ${sessionId || prev.sessionId}`);
       return true;
     }
     return false;
@@ -474,7 +702,8 @@ export class LiveCommerceDatabase {
   public isRuntimeLocked(sessionId: string): boolean {
     if (!this.runtimeLock) return false;
     if (this.runtimeLock.sessionId !== sessionId) return false;
-    return Date.now() < new Date(this.runtimeLock.expiresAt).getTime();
+    if (this.runtimeLock.status === 'RELEASED') return false;
+    return Date.now() < new Date(this.runtimeLock.expiresAt || this.runtimeLock.expires_at || 0).getTime();
   }
 
   // Telemetry Recording

@@ -1,5 +1,8 @@
-import { db } from '../db';
+import { productRepository } from '../repositories/ProductRepository';
+import { inventoryRepository } from '../repositories/InventoryRepository';
+import { promotionRepository } from '../repositories/PromotionRepository';
 import { Product, ProductVariant, Inventory, Promotion } from '../db/schema';
+import { db } from '../db';
 
 export interface VerifiedProductFacts {
   sku: string;
@@ -24,27 +27,60 @@ export interface VerifiedProductFacts {
 }
 
 export class ProductService {
+  public async getAllProductsAsync(): Promise<Product[]> {
+    return productRepository.getAll();
+  }
+
   public getAllProducts(): Product[] {
     return db.getAllProducts();
+  }
+
+  public async getProductBySkuAsync(sku: string): Promise<Product | null> {
+    return productRepository.getBySku(sku);
   }
 
   public getProductBySku(sku: string): Product | undefined {
     return db.getProductBySku(sku);
   }
 
+  public async getProductByIdAsync(id: string): Promise<Product | null> {
+    return productRepository.getById(id);
+  }
+
+  public getProductById(id: string): Product | undefined {
+    return db.getProductById(id);
+  }
+
+  public async getVariantsAsync(productId: string): Promise<ProductVariant[]> {
+    return productRepository.getVariants(productId);
+  }
+
   public getVariants(productId: string): ProductVariant[] {
     return db.getVariantsForProduct(productId);
+  }
+
+  public async getInventoryAsync(sku: string): Promise<Inventory | null> {
+    return inventoryRepository.get(sku);
   }
 
   public getInventory(sku: string): Inventory | undefined {
     return db.getInventory(sku);
   }
 
+  public async getActivePromotionAsync(sku: string): Promise<Promotion | null> {
+    return promotionRepository.getActive(sku);
+  }
+
   public getActivePromotion(sku: string): Promotion | undefined {
     return db.getActivePromotion(sku);
   }
 
+  public async updateStockAsync(sku: string, newStock: number): Promise<Inventory> {
+    return inventoryRepository.update(sku, newStock);
+  }
+
   public updateStock(sku: string, newStock: number): void {
+    inventoryRepository.update(sku, newStock).catch(() => {});
     db.updateStock(sku, newStock);
   }
 }
@@ -100,9 +136,43 @@ export class ProductVerificationService {
       isOutOfStock: inventory.total_stock <= 0,
       promoTitle: promo ? promo.title : `${discountPercent}% OFF Live Special`,
       variants,
-      bpomNumber: product.metadata.bpom_number,
-      approvedClaims: product.metadata.claims_approved || [],
-      restrictedClaims: product.metadata.claims_restricted || []
+      bpomNumber: product.metadata?.bpom_number || '',
+      approvedClaims: product.metadata?.claims_approved || [],
+      restrictedClaims: product.metadata?.claims_restricted || []
+    };
+  }
+
+  public async verifyProductDataAsync(sku: string): Promise<VerifiedProductFacts | null> {
+    const product = await productRepository.getBySku(sku);
+    if (!product) return null;
+
+    const inventory = (await inventoryRepository.get(sku)) || { total_stock: 0, reserved_stock: 0, available_stock: 0, low_stock_threshold: 10, sku, last_updated: '' };
+    const promo = await promotionRepository.getActive(sku);
+    const variants = await productRepository.getVariants(product.id);
+
+    const salePrice = product.sale_price !== null ? product.sale_price : product.base_price;
+    const discountPercent = promo ? promo.discount_percent : (product.sale_price ? Math.round(((product.base_price - product.sale_price) / product.base_price) * 100) : 0);
+
+    return {
+      sku: product.sku,
+      name: product.name,
+      category: product.category,
+      brand: product.brand,
+      basePrice: product.base_price,
+      salePrice: salePrice,
+      currency: product.currency,
+      basePriceFormatted: `Rp${product.base_price.toLocaleString('id-ID')}`,
+      salePriceFormatted: `Rp${salePrice.toLocaleString('id-ID')}`,
+      discountPercent: discountPercent,
+      totalStock: inventory.total_stock,
+      availableStock: inventory.available_stock,
+      isLowStock: inventory.total_stock <= 10,
+      isOutOfStock: inventory.total_stock <= 0,
+      promoTitle: promo ? promo.title : `${discountPercent}% OFF Live Special`,
+      variants,
+      bpomNumber: product.metadata?.bpom_number || '',
+      approvedClaims: product.metadata?.claims_approved || [],
+      restrictedClaims: product.metadata?.claims_restricted || []
     };
   }
 }
