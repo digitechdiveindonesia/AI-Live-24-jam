@@ -360,7 +360,9 @@ export class TTSProviderFactory {
   }
 
   public getProvider(mode?: 'MOCK' | 'GEMINI' | 'EXTERNAL'): TTSProvider {
-    const target = mode || this.currentMode;
+    // FREE_ONLY_MODE keeps TTS on the local mock path and prevents paid/external providers.
+    const freeOnly = process.env.FREE_ONLY_MODE !== 'false';
+    const target = freeOnly ? 'MOCK' : (mode || this.currentMode);
     const provider = this.providers.get(target);
     if (!provider) {
       return this.providers.get('MOCK')!;
@@ -369,6 +371,11 @@ export class TTSProviderFactory {
   }
 
   public setProvider(mode: 'MOCK' | 'GEMINI' | 'EXTERNAL'): void {
+    if (process.env.FREE_ONLY_MODE !== 'false' && mode !== 'MOCK') {
+      this.currentMode = 'MOCK';
+      eventService.emit('TTS_PROVIDER_SWITCHED', { mode: 'MOCK', blockedRequestedMode: mode, reason: 'FREE_ONLY_MODE', timestamp: new Date().toISOString() });
+      return;
+    }
     this.currentMode = mode;
     eventService.emit('TTS_PROVIDER_SWITCHED', {
       mode,
