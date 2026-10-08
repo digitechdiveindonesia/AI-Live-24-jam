@@ -16,18 +16,18 @@ import { BroadcastSession, ProductItem, LiveChatMessage } from './types';
 // Bootstrap development fallback data used only until initial API load resolves
 const BOOTSTRAP_SESSION: BroadcastSession = {
   id: 'LIVE-001',
-  title: 'Sari Glow Mega Flash Sale Payday',
-  runtime: '02:14:30',
-  viewers: 1284,
-  gmv: 'Rp48.200.000',
-  orders: 612,
-  isLive: true,
-  isAiHostOn: true,
+  title: 'AI Live Commerce',
+  runtime: '00:00:00',
+  viewers: 0,
+  gmv: 'Rp0',
+  orders: 0,
+  isLive: false,
+  isAiHostOn: false,
   isMuted: false,
   isPaused: false,
   isMicTakeover: false,
-  activeState: 'PROMO',
-  liveTranscript: 'Sedang menjelaskan promo Serum X: Dapatkan diskon 20% khusus checkout keranjang kuning sekarang juga ya kak!'
+  activeState: 'IDLE',
+  liveTranscript: 'Belum ada live session aktif.'
 };
 
 const BOOTSTRAP_PRODUCTS: ProductItem[] = [
