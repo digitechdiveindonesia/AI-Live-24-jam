@@ -58,7 +58,7 @@ export class CloudRuntimeController {
 
   private constructor() {
     // If RUNTIME_MODE is CLOUD and not in test, use CloudRunRuntimeProvider
-    const useCloud = process.env.RUNTIME_MODE === 'CLOUD' && process.env.NODE_ENV !== 'test';
+    const useCloud = process.env.RUNTIME_MODE === 'CLOUD' && process.env.ALLOW_BILLABLE_SERVICES === 'true' && process.env.NODE_ENV !== 'test';
     this.runtimeProvider = useCloud ? new CloudRunRuntimeProvider() : new MockRuntimeProvider();
 
 
