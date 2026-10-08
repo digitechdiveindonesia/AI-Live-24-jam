@@ -306,7 +306,9 @@ export class AvatarProviderFactory {
   }
 
   public getProvider(mode?: 'MOCK' | 'EXTERNAL'): AvatarProvider {
-    const target = mode || this.currentMode;
+    // FREE_ONLY_MODE is the safety switch: external paid avatar providers are never selected by default.
+    const freeOnly = process.env.FREE_ONLY_MODE !== 'false';
+    const target = freeOnly ? 'MOCK' : (mode || this.currentMode);
     const provider = this.providers.get(target);
     if (!provider) {
       return this.providers.get('MOCK')!;
@@ -315,6 +317,11 @@ export class AvatarProviderFactory {
   }
 
   public setProvider(mode: 'MOCK' | 'EXTERNAL'): void {
+    if (process.env.FREE_ONLY_MODE !== 'false' && mode !== 'MOCK') {
+      this.currentMode = 'MOCK';
+      eventService.emit('AVATAR_PROVIDER_SWITCHED', { mode: 'MOCK', blockedRequestedMode: mode, reason: 'FREE_ONLY_MODE', timestamp: new Date().toISOString() });
+      return;
+    }
     this.currentMode = mode;
     eventService.emit('AVATAR_PROVIDER_SWITCHED', {
       mode,
