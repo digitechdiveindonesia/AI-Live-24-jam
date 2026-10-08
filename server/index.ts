@@ -1167,7 +1167,7 @@ app.post('/api/runtime/telemetry/reset', (req: Request, res: Response) => {
 });
 
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`[AI Live Commerce Server] Running at http://localhost:${PORT}`);
   });
