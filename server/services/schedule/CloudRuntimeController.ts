@@ -47,11 +47,11 @@ export class CloudRuntimeController {
   private static instance: CloudRuntimeController;
 
   private runtimeProvider: CloudRuntimeProvider;
-  private currentStatus: CloudRuntimeStatus = 'RUNNING'; // Default to align with existing seed session
-  private activeInstanceId: string = 'inst-cloud-01';
+  private currentStatus: CloudRuntimeStatus = 'OFF'; // Production-safe default: runtime must be explicitly started
+  private activeInstanceId: string = '';
   private scheduledRestartEnabled: boolean = false;
   private gracePeriodSec: number = 60; // 60-second default graceful shutdown window
-  private runtimeStartedAt: number = Date.now() - 7200000; // 2 hours ago matching seed
+  private runtimeStartedAt: number = Date.now();
   private isManualOverride: boolean = false;
   private recoveryAttempts: number = 0;
   private readonly MAX_RECOVERY_ATTEMPTS: number = 3;
@@ -61,8 +61,7 @@ export class CloudRuntimeController {
     const useCloud = process.env.RUNTIME_MODE === 'CLOUD' && process.env.NODE_ENV !== 'test';
     this.runtimeProvider = useCloud ? new CloudRunRuntimeProvider() : new MockRuntimeProvider();
 
-    // Initialize lock for seed session
-    db.acquireRuntimeLock('LIVE-001', this.activeInstanceId, 3600000);
+
   }
 
   public static getInstance(): CloudRuntimeController {
