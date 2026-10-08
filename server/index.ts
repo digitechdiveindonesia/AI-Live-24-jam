@@ -385,7 +385,7 @@ app.post('/api/providers/tts', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'mode must be MOCK, GEMINI, or EXTERNAL' });
   }
   ttsProviderFactory.setProvider(mode);
-  res.json({ success: true, currentTtsProvider: mode });
+  res.json({ success: true, currentTtsProvider: ttsProviderFactory.getCurrentProviderMode(), requestedProvider: mode });
 });
 
 app.post('/api/providers/avatar', (req: Request, res: Response) => {
@@ -394,7 +394,7 @@ app.post('/api/providers/avatar', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'mode must be MOCK or EXTERNAL' });
   }
   avatarProviderFactory.setProvider(mode);
-  res.json({ success: true, currentAvatarProvider: mode });
+  res.json({ success: true, currentAvatarProvider: avatarProviderFactory.getCurrentProviderMode(), requestedProvider: mode });
 });
 
 // 5. Knowledge & Grounding Engine (Supabase backed)
